@@ -1,0 +1,97 @@
+services:
+  postgres:
+    image: postgres:18.1-alpine
+    container_name: aiapk-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aiservice_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-SecureDBP@ss2026!}
+      POSTGRES_DB: aiapk_generation_db
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiservice_admin -d aiapk_generation_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - aiapk-network
+    security_opt:
+      - no-new-privileges:true
+
+  redis:
+    image: redis:8.0-alpine
+    container_name: aiapk-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 1gb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD:-SecureRedisP@ss2026!}
+      --save 60 1000
+      --save 300 100
+      --save 900 10
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - aiapk-network
+    security_opt:
+      - no-new-privileges:true
+
+  rabbitmq:
+    image: rabbitmq:4.0-management-alpine
+    container_name: aiapk-rabbitmq
+    restart: unless-stopped
+    hostname: aiapk-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-aiservice_admin}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-SecureRabbitP@ss2026!}
+      RABBITMQ_DEFAULT_VHOST: /aiapk
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: -rabbit log_levels [{connection,error},{default,warning}]
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - rabbitmq_logs:/var/log/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - aiapk-network
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  postgres_data:
+    name: aiapk_postgres_data
+  redis_data:
+    name: aiapk_redis_data
+  rabbitmq_data:
+    name: aiapk_rabbitmq_data
+  rabbitmq_logs:
+    name: aiapk_rabbitmq_logs
+
+networks:
+  aiapk-network:
+    name: aiapk_network
+    driver: bridge
+

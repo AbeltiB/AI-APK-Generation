@@ -401,3 +401,14 @@ const styles = StyleSheet.create({{
   }},
   // More styles...
 }});
+""",  # Closes the system string
+        user_template="""Generate the React Native code for:
+{architecture}
+
+Layout:
+{layout}
+
+Logic:
+{blockly_workspace}
+""" # Closes the user_template string
+    ) # Closes the PromptTemplate object

@@ -45,7 +45,7 @@ def validate_bounds(
     return True, None
 
 
-def check_collisions(components: List[EnhancedComponentDefinition]) -> Tuple[bool, Optional[str]]:
+def check_collisions(components: list[EnhancedComponentDefinition]) -> Tuple[bool, Optional[str]]:
     """Check for component collisions"""
     bounds_list = []
     

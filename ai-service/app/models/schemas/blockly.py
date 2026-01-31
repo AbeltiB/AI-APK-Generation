@@ -1,8 +1,8 @@
 """
 Blockly visual programming models.
 """
-from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, Field, field_validator
+from typing import List, Dict, Any, Optional, Literal
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class BlocklyBlock(BaseModel):

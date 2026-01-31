@@ -33,3 +33,14 @@ class EnrichedContext(BaseModel):
     existing_project: Optional[Dict[str, Any]] = None
     user_preferences: Dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class PromptContext(BaseModel):
+    """Schema for managing prompt templates and generation settings"""
+    template_name: str = Field(..., description="The ID or name of the prompt template")
+    system_prompt: str
+    user_prompt: str
+    variables: Dict[str, Any] = Field(default_factory=dict)
+    model_settings: Dict[str, Any] = Field(
+        default_factory=lambda: {"temperature": 0.7, "max_tokens": 2048}
+    )

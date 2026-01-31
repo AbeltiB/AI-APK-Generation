@@ -5,8 +5,7 @@ from .templates import (
     PromptTemplate,
     PromptLibrary,
     PromptType,
-    PromptVersion,
-    prompts,
+    PromptVersion
 )
 
 __all__ = [
@@ -14,5 +13,4 @@ __all__ = [
     'PromptLibrary',
     'PromptType',
     'PromptVersion',
-    'prompts',
 ]

@@ -1,31 +1,32 @@
 """
-Models package - Unified schema and prompt system.
+Unified schema system for AI app builder.
 
-Exports:
-- schemas: All data models and validation
-- prompts: All prompt templates
+This module provides all data models, validation, and helper functions
+for the complete app generation pipeline.
 """
 
-from .schemas import (
-    # Core types
+from .core import (
     PropertyValue,
     ComponentStyle,
     COMPONENT_PROPERTY_SCHEMAS,
-    
-    # Input/Output
+)
+
+from .input_output import (
     AIRequest,
     ProgressUpdate,
     ErrorResponse,
     CompleteResponse,
-    
-    # Architecture
+)
+
+from .architecture import (
     ArchitectureDesign,
     ScreenDefinition,
     NavigationStructure,
     StateDefinition,
     DataFlowDiagram,
-    
-    # Components
+)
+
+from .components import (
     BaseComponentProperties,
     ButtonProperties,
     InputTextProperties,
@@ -34,52 +35,57 @@ from .schemas import (
     CheckboxProperties,
     SliderProperties,
     EnhancedComponentDefinition,
-    
-    # Layout
+)
+
+from .layout import (
     Position,
     LayoutConstraints,
     EnhancedLayoutDefinition,
-    
-    # Blockly
+)
+
+from .blockly import (
     BlocklyDefinition,
     BlocklyBlock,
     BlocklyWorkspace,
     EnhancedBlocklyDefinition,
-    
-    # Context
+)
+
+from .context import (
     PromptContext,
     IntentAnalysis,
     EnrichedContext,
-    
-    # Helper functions
+)
+
+from .validation import (
     create_component,
     validate_layout,
     validate_component,
     get_component_schema,
-)
-
-from .prompts import (
-    PromptTemplate,
-    PromptLibrary,
-    PromptType,
-    PromptVersion,
-    prompts,
+    validate_color,
+    validate_bounds,
+    check_collisions,
 )
 
 __all__ = [
-    # Schemas
+    # Core types
     'PropertyValue',
     'ComponentStyle',
     'COMPONENT_PROPERTY_SCHEMAS',
+    
+    # Input/Output
     'AIRequest',
     'ProgressUpdate',
     'ErrorResponse',
     'CompleteResponse',
+    
+    # Architecture
     'ArchitectureDesign',
     'ScreenDefinition',
     'NavigationStructure',
     'StateDefinition',
     'DataFlowDiagram',
+    
+    # Components
     'BaseComponentProperties',
     'ButtonProperties',
     'InputTextProperties',
@@ -88,25 +94,29 @@ __all__ = [
     'CheckboxProperties',
     'SliderProperties',
     'EnhancedComponentDefinition',
+    
+    # Layout
     'Position',
     'LayoutConstraints',
     'EnhancedLayoutDefinition',
+    
+    # Blockly
     'BlocklyDefinition',
     'BlocklyBlock',
     'BlocklyWorkspace',
     'EnhancedBlocklyDefinition',
+    
+    # Context
     'PromptContext',
     'IntentAnalysis',
     'EnrichedContext',
+    
+    # Validation helpers
     'create_component',
     'validate_layout',
     'validate_component',
     'get_component_schema',
-    
-    # Prompts
-    'PromptTemplate',
-    'PromptLibrary',
-    'PromptType',
-    'PromptVersion',
-    'prompts',
+    'validate_color',
+    'validate_bounds',
+    'check_collisions',
 ]

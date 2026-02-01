@@ -12,5 +12,5 @@ __all__ = [
     'PromptTemplate',
     'PromptLibrary',
     'PromptType',
-    'PromptVersion',
+    'PromptVersion'
 ]

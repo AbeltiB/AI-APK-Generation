@@ -8,9 +8,13 @@ from .templates import (
     PromptVersion
 )
 
+# Create an instance of PromptLibrary
+prompts = PromptLibrary()
+
 __all__ = [
     'PromptTemplate',
     'PromptLibrary',
     'PromptType',
-    'PromptVersion'
+    'PromptVersion',
+    'prompts'  
 ]

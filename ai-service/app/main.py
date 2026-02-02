@@ -28,7 +28,7 @@ from app.api.v1 import results
 from app.utils.logging import get_logger, log_context
 
 # Import routers
-from app.api.v1 import health_advanced, generate
+from app.api.v1 import health, generate
 
 logger = get_logger(__name__)
 
@@ -230,7 +230,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # Health checks (multi-tier)
 app.include_router(
-    health_advanced.router,
+    health.router,
     tags=["Health"]
 )
 

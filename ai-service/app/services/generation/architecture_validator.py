@@ -8,7 +8,7 @@ from typing import Dict, Any, List, Tuple, Optional
 from datetime import datetime
 
 from app.config import settings
-from app.models.schemas import ArchitectureDesign, ScreenDefinition
+from app.models.schemas.architecture import ArchitectureDesign, ScreenDefinition
 from app.utils.logging import get_logger, log_context
 
 logger = get_logger(__name__)

@@ -9,13 +9,15 @@ Validates generated layouts for:
 - Accessibility compliance
 """
 from typing import List, Tuple, Dict, Any, Optional
-from loguru import logger
+import math
 
 from app.config import settings
-from app.models.enhanced_schemas import (
-    EnhancedLayoutDefinition,
-    EnhancedComponentDefinition
-)
+from app.models.schemas.layout import EnhancedLayoutDefinition
+from app.models.schemas.components import EnhancedComponentDefinition
+from app.models.schemas.core import PropertyValue
+from app.utils.logging import get_logger, log_context
+
+logger = get_logger(__name__)
 
 
 class LayoutWarning:
@@ -61,6 +63,14 @@ class LayoutValidator:
         self.canvas_width = settings.canvas_width
         self.canvas_height = settings.canvas_height
         self.min_touch_size = settings.min_touch_target_size
+        
+        logger.info(
+            "🔍 layout.validator.initialized",
+            extra={
+                "canvas": f"{self.canvas_width}x{self.canvas_height}",
+                "min_touch_size": self.min_touch_size
+            }
+        )
     
     async def validate(
         self,
@@ -75,34 +85,52 @@ class LayoutValidator:
         Returns:
             Tuple of (is_valid, warnings_list)
         """
-        self.warnings = []
-        
-        logger.info(f"🔍 Validating layout for screen: {layout.screen_id}")
-        
-        # Run all validation checks
-        await self._validate_canvas(layout)
-        await self._validate_component_bounds(layout)
-        await self._validate_touch_targets(layout)
-        await self._validate_collisions(layout)
-        await self._validate_spacing(layout)
-        await self._validate_visual_hierarchy(layout)
-        await self._validate_accessibility(layout)
-        
-        # Determine if layout is valid
-        has_errors = any(w.level == "error" for w in self.warnings)
-        is_valid = not has_errors
-        
-        if is_valid:
-            logger.info("✅ Layout validation passed")
-        else:
+        with log_context(operation="layout_validation"):
+            self.warnings = []
+            
+            logger.info(
+                "🔍 layout.validation.started",
+                extra={
+                    "screen_id": layout.screen_id,
+                    "components": len(layout.components)
+                }
+            )
+            
+            # Run all validation checks
+            await self._validate_canvas(layout)
+            await self._validate_component_bounds(layout)
+            await self._validate_touch_targets(layout)
+            await self._validate_collisions(layout)
+            await self._validate_spacing(layout)
+            await self._validate_visual_hierarchy(layout)
+            await self._validate_accessibility(layout)
+            
+            # Determine if layout is valid
+            has_errors = any(w.level == "error" for w in self.warnings)
+            is_valid = not has_errors
+            
             error_count = sum(1 for w in self.warnings if w.level == "error")
-            logger.error(f"❌ Layout validation failed: {error_count} error(s)")
-        
-        warning_count = sum(1 for w in self.warnings if w.level == "warning")
-        if warning_count > 0:
-            logger.warning(f"⚠️  {warning_count} warning(s) found")
-        
-        return is_valid, self.warnings
+            warning_count = sum(1 for w in self.warnings if w.level == "warning")
+            info_count = sum(1 for w in self.warnings if w.level == "info")
+            
+            if is_valid:
+                logger.info(
+                    "✅ layout.validation.passed",
+                    extra={
+                        "warnings": warning_count,
+                        "infos": info_count
+                    }
+                )
+            else:
+                logger.error(
+                    "❌ layout.validation.failed",
+                    extra={
+                        "errors": error_count,
+                        "warnings": warning_count
+                    }
+                )
+            
+            return is_valid, self.warnings
     
     async def _validate_canvas(self, layout: EnhancedLayoutDefinition) -> None:
         """Validate canvas configuration"""
@@ -321,7 +349,6 @@ class LayoutValidator:
                 return l1_y - r2_y
         
         # Otherwise use center distance
-        import math
         return math.sqrt((c2_x - c1_x)**2 + (c2_y - c1_y)**2)
     
     async def _validate_visual_hierarchy(
@@ -460,7 +487,7 @@ layout_validator = LayoutValidator()
 if __name__ == "__main__":
     # Test validator
     import asyncio
-    from app.models.enhanced_schemas import PropertyValue
+    from app.models.schemas.core import PropertyValue
     
     async def test():
         print("\n" + "=" * 60)

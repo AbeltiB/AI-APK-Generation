@@ -11,7 +11,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 
 from app.core.database import db_manager
-from app.models.enhanced_schemas import IntentAnalysis, EnrichedContext
+from app.models.schemas import IntentAnalysis, EnrichedContext
 from app.utils.logging import get_logger, log_context
 
 logger = get_logger(__name__)

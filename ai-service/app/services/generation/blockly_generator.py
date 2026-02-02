@@ -9,7 +9,10 @@ Validates generated Blockly blocks for:
 - Logic flow validation
 """
 from typing import List, Tuple, Dict, Any, Set, Optional
-from loguru import logger
+
+from app.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class BlocklyWarning:
@@ -24,7 +27,7 @@ class BlocklyWarning:
     def to_dict(self) -> Dict[str, str]:
         return {
             'level': self.level,
-            'block_id': block_id,
+            'block_id': self.block_id,
             'message': self.message,
             'suggestion': self.suggestion
         }
@@ -55,7 +58,13 @@ class BlocklyValidator:
         self.block_ids: Set[str] = set()
         self.variable_ids: Set[str] = set()
         self.variable_names: Set[str] = set()
+        
+        logger.info(
+            "🔍 blockly.validator.initialized",
+            extra={}
+        )
     
+
     async def validate(
         self,
         blockly: Dict[str, Any]
@@ -74,7 +83,13 @@ class BlocklyValidator:
         self.variable_ids = set()
         self.variable_names = set()
         
-        logger.info("🔍 Validating Blockly blocks...")
+        logger.info(
+            "🔍 blockly.validation.started",
+            extra={
+                "blocks_count": len(blockly.get('blocks', {}).get('blocks', [])),
+                "variables_count": len(blockly.get('variables', []))
+            }
+        )
         
         # Extract blocks and variables
         blocks = blockly.get('blocks', {}).get('blocks', [])
@@ -96,15 +111,26 @@ class BlocklyValidator:
         has_errors = any(w.level == "error" for w in self.warnings)
         is_valid = not has_errors
         
-        if is_valid:
-            logger.info("✅ Blockly validation passed")
-        else:
-            error_count = sum(1 for w in self.warnings if w.level == "error")
-            logger.error(f"❌ Blockly validation failed: {error_count} error(s)")
-        
+        error_count = sum(1 for w in self.warnings if w.level == "error")
         warning_count = sum(1 for w in self.warnings if w.level == "warning")
-        if warning_count > 0:
-            logger.warning(f"⚠️  {warning_count} warning(s) found")
+        info_count = sum(1 for w in self.warnings if w.level == "info")
+        
+        if is_valid:
+            logger.info(
+                "✅ blockly.validation.passed",
+                extra={
+                    "warnings": warning_count,
+                    "infos": info_count
+                }
+            )
+        else:
+            logger.error(
+                "❌ blockly.validation.failed",
+                extra={
+                    "errors": error_count,
+                    "warnings": warning_count
+                }
+            )
         
         return is_valid, self.warnings
     

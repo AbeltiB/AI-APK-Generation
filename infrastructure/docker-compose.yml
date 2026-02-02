@@ -1,12 +1,17 @@
+version: "3.9"
+
 services:
+  # ============================
+  # PostgreSQL
+  # ============================
   postgres:
-    image: postgres:18.1-alpine
+    image: postgres:16-alpine
     container_name: aiapk-postgres
-    restart: unless-stopped
+    restart: on-failure
     environment:
-      POSTGRES_USER: aiservice_admin
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-SecureDBP@ss2026!}
-      POSTGRES_DB: aiapk_generation_db
+      POSTGRES_USER: ${POSTGRES_USER:-aiservice_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-aiapk_generation_db}
       POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
@@ -15,54 +20,72 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./init-scripts:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U aiservice_admin -d aiapk_generation_db"]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aiservice_admin} -d ${POSTGRES_DB:-aiapk_generation_db}" ]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
-    networks:
-      - aiapk-network
     security_opt:
       - no-new-privileges:true
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 2g
+    networks:
+      - aiapk-network
 
+  # ============================
+  # Redis
+  # ============================
   redis:
-    image: redis:8.0-alpine
+    image: redis:7-alpine
     container_name: aiapk-redis
-    restart: unless-stopped
+    restart: on-failure
     command: >
-      redis-server
-      --appendonly yes
-      --maxmemory 1gb
-      --maxmemory-policy allkeys-lru
-      --requirepass ${REDIS_PASSWORD:-SecureRedisP@ss2026!}
-      --save 60 1000
-      --save 300 100
-      --save 900 10
+      redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD} --save 60 1000 --save 300 100 --save 900 10
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      test: [ "CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping" ]
       interval: 10s
       timeout: 3s
       retries: 5
       start_period: 5s
-    networks:
-      - aiapk-network
     security_opt:
       - no-new-privileges:true
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 3s
+        max_attempts: 10
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+    networks:
+      - aiapk-network
 
+  # ============================
+  # RabbitMQ
+  # ============================
   rabbitmq:
-    image: rabbitmq:4.0-management-alpine
+    image: rabbitmq:3.12-management-alpine
     container_name: aiapk-rabbitmq
-    restart: unless-stopped
+    restart: on-failure
     hostname: aiapk-rabbitmq
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-aiservice_admin}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-SecureRabbitP@ss2026!}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
       RABBITMQ_DEFAULT_VHOST: /aiapk
-      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: -rabbit log_levels [{connection,error},{default,warning}]
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: >
+        -rabbit log_levels [{connection,error},{default,warning}]
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -70,16 +93,89 @@ services:
       - rabbitmq_data:/var/lib/rabbitmq
       - rabbitmq_logs:/var/log/rabbitmq
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      test: [ "CMD", "rabbitmq-diagnostics", "-q", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
-    networks:
-      - aiapk-network
     security_opt:
       - no-new-privileges:true
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+    networks:
+      - aiapk-network
 
+  # ============================
+  # Celery Worker
+  # ============================
+  celery-worker:
+    image: aiapk-app:latest
+    container_name: aiapk-celery-worker
+    command: >
+      celery -A app.celery_app worker --loglevel=INFO --concurrency=4
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      CELERY_BROKER_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/aiapk
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/0
+    restart: on-failure
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 10
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
+    networks:
+      - aiapk-network
+
+  # ============================
+  # Flower (Celery Monitoring)
+  # ============================
+  flower:
+    image: mher/flower:2.0
+    container_name: aiapk-flower
+    command: >
+      celery --broker=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/aiapk flower --port=5555
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      FLOWER_BASIC_AUTH: ${FLOWER_USER}:${FLOWER_PASSWORD}
+    ports:
+      - "5555:5555"
+    restart: on-failure
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512m
+    networks:
+      - aiapk-network
+
+# ============================
+# Volumes
+# ============================
 volumes:
   postgres_data:
     name: aiapk_postgres_data
@@ -90,8 +186,10 @@ volumes:
   rabbitmq_logs:
     name: aiapk_rabbitmq_logs
 
+# ============================
+# Network
+# ============================
 networks:
   aiapk-network:
     name: aiapk_network
     driver: bridge
-

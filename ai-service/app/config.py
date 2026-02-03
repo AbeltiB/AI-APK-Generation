@@ -30,6 +30,26 @@ class Settings(BaseSettings):
     debug: bool = False
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:8000"]
+
+        # ============================================================================
+    # CELERY TASK QUEUE SETTINGS (Production-Ready)
+    # ============================================================================
+    
+    celery_broker_url: str = "redis://redis:6379/0"
+    celery_result_backend: str = "redis://redis:6379/1"
+    celery_task_serializer: str = "json"
+    celery_result_serializer: str = "json"
+    celery_accept_content: list[str] = ["json"]
+    celery_timezone: str = "UTC"
+    celery_enable_utc: bool = True
+    celery_task_track_started: bool = True
+    celery_task_time_limit: int = 1800  # 30 minutes max
+    celery_task_soft_time_limit: int = 1500  # 25 minutes soft limit
+    celery_worker_prefetch_multiplier: int = 1
+    celery_worker_max_tasks_per_child: int = 100
+    celery_task_acks_late: bool = True
+    celery_task_reject_on_worker_lost: bool = True
+    celery_result_expires: int = 86400  # 24 hours
     
     # ============================================================================
     # LLAMA3 API SETTINGS (PRIMARY AND ONLY LLM)
@@ -285,6 +305,7 @@ def get_settings() -> Settings:
         logger.info(f"   PostgreSQL: {settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}")
         logger.info(f"   Redis: {settings.redis_host}:{settings.redis_port}")
         logger.info(f"   RabbitMQ: {settings.rabbitmq_host}:{settings.rabbitmq_port}")
+
         
         # Production warnings
         if settings.is_production:

@@ -1,6 +1,12 @@
 """
-Celery tasks for async AI processing - Production Ready.
-Full pipeline integration with comprehensive logging and error handling.
+Celery tasks for async AI processing - WITH PROJECT STATE INTEGRATION
+======================================================================
+
+This version integrates the Project State system for:
+- Persistent state across user sessions
+- Intent-based controlled mutations
+- Full change logging
+- Version control
 """
 from typing import Dict, Any
 from loguru import logger
@@ -12,6 +18,10 @@ from app.models.schemas.input_output import AIRequest
 from app.core.cache import cache_manager
 from app.core.database import db_manager
 
+# Import Project State components
+from app.services.state_persistence import ProjectStatePersistence, FileSystemBackend
+from app.services.pipeline_integration import integrate_with_pipeline
+
 
 @celery_app.task(
     name="ai.generate",
@@ -19,31 +29,34 @@ from app.core.database import db_manager
     autoretry_for=(Exception,),
     retry_kwargs={"max_retries": 3, "countdown": 5},
     retry_backoff=True,
-    retry_backoff_max=600,  # Max 10 minutes
+    retry_backoff_max=600,
     retry_jitter=True,
 )
 def generate_task(self, payload: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Main AI generation task - Production Ready.
+    Main AI generation task - WITH PROJECT STATE MANAGEMENT.
     
-    Executes full pipeline:
+    Executes full pipeline with state persistence:
     1. Validate request
     2. Connect services
-    3. Run pipeline
-    4. Save results
-    5. Return complete JSON response
+    3. Load or create project state
+    4. Run AI pipeline
+    5. Apply state mutations (controlled by intent)
+    6. Persist updated state
+    7. Save results to database
+    8. Return complete JSON response
     
     Args:
         payload: Task payload with AI request data
         
     Returns:
-        Complete JSON response with all generated artifacts
+        Complete JSON response with all generated artifacts + state metadata
     """
     task_id = self.request.id
     start_time = time.time()
     
     logger.info(
-        f"🚀 Celery task started",
+        f"🚀 Celery task started (WITH STATE MANAGEMENT)",
         extra={
             "celery_task_id": task_id,
             "request_task_id": payload.get('task_id'),
@@ -65,7 +78,7 @@ def generate_task(self, payload: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
         
-        # Run async pipeline
+        # Run async pipeline with state management
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
@@ -74,14 +87,29 @@ def generate_task(self, payload: Dict[str, Any]) -> Dict[str, Any]:
             logger.info("🔌 Connecting to services...")
             loop.run_until_complete(connect_services())
             
-            # Execute pipeline
+            # Initialize state persistence
+            logger.info("🗄️  Initializing state persistence...")
+            state_backend = FileSystemBackend(storage_path="./project_states")
+            state_persistence = ProjectStatePersistence(state_backend)
+            
+            # Execute pipeline (existing logic)
             logger.info("⚙️  Executing AI pipeline...")
             from app.services.pipeline import default_pipeline
-            result = loop.run_until_complete(default_pipeline.execute(request))
+            pipeline_result = loop.run_until_complete(default_pipeline.execute(request))
             
-            # Save to database
+            # Integrate with Project State system
+            logger.info("🔧 Applying state management...")
+            result = loop.run_until_complete(
+                integrate_with_pipeline(
+                    request=request,
+                    pipeline_result=pipeline_result,
+                    persistence=state_persistence,
+                )
+            )
+            
+            # Save to database (now includes state metadata)
             logger.info("💾 Saving results to database...")
-            loop.run_until_complete(save_results(request, result))
+            loop.run_until_complete(save_results_with_state(request, result))
             
             # Update task in Redis
             loop.run_until_complete(update_task_complete(request.task_id, result))
@@ -94,7 +122,7 @@ def generate_task(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         # Calculate total time
         total_time_ms = int((time.time() - start_time) * 1000)
         
-        # Build final response
+        # Build final response with state metadata
         final_response = {
             "success": True,
             "celery_task_id": task_id,
@@ -105,15 +133,23 @@ def generate_task(self, payload: Dict[str, Any]) -> Dict[str, Any]:
             "total_execution_time_ms": total_time_ms,
             "result": result,
             "status": "completed",
+            # Add state-specific metadata
+            "state_metadata": {
+                "project_id": result.get("metadata", {}).get("project_id"),
+                "state_version": result.get("metadata", {}).get("version"),
+                "total_changes": result.get("metadata", {}).get("total_changes", 0),
+            }
         }
         
         logger.info(
-            f"✅ Celery task completed successfully",
+            f"✅ Celery task completed successfully (WITH STATE)",
             extra={
                 "celery_task_id": task_id,
                 "task_id": request.task_id,
                 "total_time_ms": total_time_ms,
                 "cache_hit": result.get('metadata', {}).get('cache_hit', False),
+                "state_version": result.get("metadata", {}).get("version", 1),
+                "project_id": result.get("metadata", {}).get("project_id"),
             }
         )
         
@@ -190,19 +226,39 @@ async def disconnect_services():
         pass
 
 
-async def save_results(request: AIRequest, result: Dict[str, Any]):
-    """Save generation results to database"""
+async def save_results_with_state(request: AIRequest, result: Dict[str, Any]):
+    """
+    Save generation results to database WITH state metadata.
+    
+    Now includes:
+    - Project state ID
+    - State version
+    - Change log summary
+    """
     try:
-        # Save project
+        metadata = result.get("metadata", {})
+        
+        # Save project with state metadata
         project_id = await db_manager.save_project(
             user_id=request.user_id,
             project_name=f"Generated_{request.task_id[:8]}",
             architecture=result.get('architecture', {}),
             layout=result.get('layout', {}),
             blockly=result.get('blockly', {}),
+            # Additional state fields
+            state_project_id=metadata.get("project_id"),
+            state_version=metadata.get("version", 1),
+            state_schema_version=metadata.get("schema_version"),
         )
         
-        logger.info(f"💾 Project saved: {project_id}")
+        logger.info(
+            f"💾 Project saved with state metadata",
+            extra={
+                "db_project_id": project_id,
+                "state_project_id": metadata.get("project_id"),
+                "state_version": metadata.get("version"),
+            }
+        )
         
         # Save conversation
         conversation_id = await db_manager.save_conversation(
@@ -210,7 +266,10 @@ async def save_results(request: AIRequest, result: Dict[str, Any]):
             session_id=request.session_id,
             messages=[
                 {"role": "user", "content": request.prompt},
-                {"role": "assistant", "content": f"Generated app with task_id: {request.task_id}"},
+                {
+                    "role": "assistant",
+                    "content": f"Generated app (state version {metadata.get('version', 1)})",
+                },
             ]
         )
         

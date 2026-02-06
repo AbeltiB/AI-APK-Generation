@@ -1,60 +1,57 @@
 """
 Application configuration management using Pydantic Settings.
-Loads configuration from environment variables and .env file.
-
-LLAMA3 ONLY VERSION - All Anthropic/Claude/Groq references removed.
+LLAMA3 ONLY VERSION - fully corrected for defaults and lists/dicts.
 """
 import logging
-import sys
+import os
 from typing import Literal, Optional, Dict, Any
+from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, field_validator
-from functools import lru_cache
-import os
+from dotenv import load_dotenv
+
+# Load .env first
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-
 class Settings(BaseSettings):
-    """Application settings - Llama3 Only Version"""
+    """Application settings - Llama3 Only Version (fixed for defaults)"""
     
-    # ============================================================================
-    # APPLICATION METADATA & RUNTIME SETTINGS
-    # ============================================================================
-    
+    # -------------------------
+    # APPLICATION METADATA & RUNTIME
+    # -------------------------
     app_name: str = "AI App Builder Service (Llama3)"
     app_version: str = "0.1.0"
     api_title: str = "AI Service API - Llama3"
     api_version: str = "1.0.0"
     environment: Literal["development", "staging", "production"] = "development"
-    debug: bool = False
+    debug: bool = True
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:8000"]
 
-        # ============================================================================
-    # CELERY TASK QUEUE SETTINGS (Production-Ready)
-    # ============================================================================
-    
-    celery_broker_url: str = "redis://redis:6379/0"
-    celery_result_backend: str = "redis://redis:6379/1"
+    # -------------------------
+    # CELERY SETTINGS
+    # -------------------------
+    celery_broker_url: str = "redis://localhost:6379/0"
+    celery_result_backend: str = "redis://localhost:6379/1"
     celery_task_serializer: str = "json"
     celery_result_serializer: str = "json"
     celery_accept_content: list[str] = ["json"]
     celery_timezone: str = "UTC"
     celery_enable_utc: bool = True
     celery_task_track_started: bool = True
-    celery_task_time_limit: int = 1800  # 30 minutes max
-    celery_task_soft_time_limit: int = 1500  # 25 minutes soft limit
+    celery_task_time_limit: int = 1800
+    celery_task_soft_time_limit: int = 1500
     celery_worker_prefetch_multiplier: int = 1
     celery_worker_max_tasks_per_child: int = 100
     celery_task_acks_late: bool = True
     celery_task_reject_on_worker_lost: bool = True
-    celery_result_expires: int = 86400  # 24 hours
-    
-    # ============================================================================
-    # LLAMA3 API SETTINGS (PRIMARY AND ONLY LLM)
-    # ============================================================================
-    
+    celery_result_expires: int = 86400
+
+    # -------------------------
+    # LLM SETTINGS (Llama3 Only)
+    # -------------------------
     llama3_api_url: str = "https://fastchat.ideeza.com/v1/chat/completions"
     llama3_model: str = "llama-3-70b-instruct"
     llama3_api_key: Optional[str] = None
@@ -63,11 +60,7 @@ class Settings(BaseSettings):
     llama3_temperature: float = 0.7
     llama3_max_retries: int = 3
     llama3_retry_delay: int = 2
-    
-    # ============================================================================
-    # LLM ORCHESTRATOR SETTINGS (Llama3 → Heuristic only)
-    # ============================================================================
-    
+
     llm_primary_provider: Literal["llama3"] = "llama3"
     llm_fallback_enabled: bool = True
     llm_fallback_sequence: list[str] = ["llama3", "heuristic"]
@@ -76,22 +69,20 @@ class Settings(BaseSettings):
     llm_health_check_interval: int = 60
     llm_default_temperature: float = 0.7
     llm_default_max_tokens: int = 4096
-    
-    # ============================================================================
-    # PROMPT ENGINEERING SETTINGS
-    # ============================================================================
-    
+
+    # -------------------------
+    # PROMPT ENGINEERING
+    # -------------------------
     default_prompt_version: str = "v2"
     prompt_cache_enabled: bool = True
     prompt_cache_ttl: int = 3600
     system_prompt_path: str = "prompts/system"
     user_prompt_path: str = "prompts/user"
-    
-    # ============================================================================
-    # RABBITMQ MESSAGE QUEUE SETTINGS
-    # ============================================================================
-    
-    rabbitmq_url: str = "amqp://admin:password@localhost:5672"
+
+    # -------------------------
+    # RABBITMQ
+    # -------------------------
+    rabbitmq_url: str = "amqp://guest:guest@localhost:5672"
     rabbitmq_host: str = "localhost"
     rabbitmq_port: int = 5672
     rabbitmq_user: str = "guest"
@@ -102,12 +93,11 @@ class Settings(BaseSettings):
     rabbitmq_prefetch_count: int = 1
     rabbitmq_heartbeat: int = 60
     rabbitmq_connection_timeout: int = 10
-    
-    # ============================================================================
-    # REDIS CACHE & SESSION SETTINGS
-    # ============================================================================
-    
-    redis_url: str = "redis://localhost:6379"
+
+    # -------------------------
+    # REDIS
+    # -------------------------
+    redis_url: str = "redis://localhost:6379/0"
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
@@ -118,11 +108,10 @@ class Settings(BaseSettings):
     redis_cache_similarity_threshold: float = 0.95
     redis_pool_size: int = 10
     redis_socket_timeout: int = 5
-    
-    # ============================================================================
-    # POSTGRESQL DATABASE SETTINGS
-    # ============================================================================
-    
+
+    # -------------------------
+    # POSTGRESQL
+    # -------------------------
     postgres_host: str = "localhost"
     postgres_port: int = 5432
     postgres_db: str = "appbuilder"
@@ -133,22 +122,28 @@ class Settings(BaseSettings):
     postgres_connection_timeout: int = 30
     postgres_statement_timeout: int = 30000
     postgres_pool_recycle: int = 3600
-    
-    # ============================================================================
-    # PROCESSING, RETRY & TIMEOUT SETTINGS
-    # ============================================================================
-    
+
+    @property
+    def database_url(self) -> str:
+        return f"postgresql://{self.postgres_user}:{self.postgres_password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+
+    @property
+    def postgres_dsn(self) -> str:
+        return self.database_url
+
+    # -------------------------
+    # PROCESSING & RETRIES
+    # -------------------------
     max_retries: int = 3
     retry_delay: int = 2
     retry_backoff_factor: float = 1.5
     request_timeout: int = 30
     batch_processing_size: int = 10
     concurrent_workers: int = 4
-    
-    # ============================================================================
-    # RATE LIMITING & SECURITY SETTINGS
-    # ============================================================================
-    
+
+    # -------------------------
+    # RATE LIMITING & SECURITY
+    # -------------------------
     rate_limit_enabled: bool = True
     rate_limit_requests_per_hour: int = 100
     rate_limit_requests_per_minute: int = 20
@@ -158,11 +153,10 @@ class Settings(BaseSettings):
     jwt_secret_key: Optional[str] = None
     jwt_algorithm: str = "HS256"
     jwt_token_expire_minutes: int = 60
-    
-    # ============================================================================
-    # UI/CANVAS SPECIFICATION SETTINGS
-    # ============================================================================
-    
+
+    # -------------------------
+    # UI / CANVAS SETTINGS
+    # -------------------------
     canvas_width: int = 375
     canvas_height: int = 667
     canvas_safe_area_top: int = 44
@@ -170,11 +164,10 @@ class Settings(BaseSettings):
     canvas_background_color: str = "#FFFFFF"
     canvas_grid_size: int = 8
     canvas_snap_to_grid: bool = True
-    
-    # ============================================================================
-    # COMPONENT LIBRARY SETTINGS
-    # ============================================================================
-    
+
+    # -------------------------
+    # COMPONENT LIBRARY
+    # -------------------------
     available_components: list[str] = [
         "Button", "InputText", "Switch", "Checkbox", "TextArea",
         "Slider", "Spinner", "Text", "Joystick", "ProgressBar",
@@ -182,77 +175,56 @@ class Settings(BaseSettings):
         "Dropdown", "RadioGroup", "Image", "Video", "Audio",
         "List", "Grid", "Card", "Modal", "TabView"
     ]
-    
     min_touch_target_size: int = 44
     default_font_family: str = "San Francisco, Roboto, sans-serif"
     default_font_size: int = 16
     default_spacing_unit: int = 8
-    
-    # ============================================================================
-    # FILE STORAGE & ASSET SETTINGS
-    # ============================================================================
-    
+
+    # -------------------------
+    # FILE STORAGE
+    # -------------------------
     upload_directory: str = "./uploads"
     max_upload_size: int = 10 * 1024 * 1024
     allowed_file_types: list[str] = [".png", ".jpg", ".jpeg", ".gif", ".pdf", ".txt"]
     asset_base_url: str = "https://assets.example.com"
-    
-    # ============================================================================
-    # MONITORING & METRICS SETTINGS
-    # ============================================================================
-    
+
+    # -------------------------
+    # METRICS & MONITORING
+    # -------------------------
     metrics_enabled: bool = True
     metrics_port: int = 9090
     health_check_endpoint: str = "/health"
     readiness_endpoint: str = "/ready"
     prometheus_endpoint: str = "/metrics"
-    
-    # ============================================================================
+
+    # -------------------------
     # VALIDATORS
-    # ============================================================================
-    
+    # -------------------------
     @field_validator('log_level')
     @classmethod
     def validate_log_level(cls, v: str) -> str:
         logger.info(f"Setting log level to: {v}")
         return v.upper()
-    
+
     @field_validator('environment')
     @classmethod
     def validate_environment(cls, v: str) -> str:
-        valid_environments = ["development", "staging", "production"]
-        if v not in valid_environments:
+        valid_envs = ["development", "staging", "production"]
+        if v not in valid_envs:
             logger.warning(f"Invalid environment '{v}', defaulting to 'development'")
             return "development"
-        logger.info(f"Application environment: {v}")
         return v
-    
-    @field_validator('debug')
-    @classmethod
-    def set_debug_from_environment(cls, v: bool, info) -> bool:
-        environment = info.data.get('environment', 'development')
-        if environment == "production" and v:
-            logger.warning("Debug mode is enabled in production environment")
-        elif environment == "development" and not v:
-            logger.info("Auto-enabling debug mode for development")
-            return True
-        return v
-    
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
-    
+
     @property
     def is_development(self) -> bool:
         return self.environment == "development"
-    
-    @property
-    def postgres_dsn(self) -> str:
-        return f"postgresql://{self.postgres_user}:{self.postgres_password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-    
+
     @property
     def llm_config(self) -> Dict[str, Any]:
-        """Get LLM configuration dictionary"""
         return {
             "primary_provider": self.llm_primary_provider,
             "fallback_enabled": self.llm_fallback_enabled,
@@ -264,12 +236,12 @@ class Settings(BaseSettings):
             "llama3_api_url": self.llama3_api_url,
             "llama3_model": self.llama3_model,
         }
-    
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
-        extra="ignore",
+        extra="allow",  # crucial fix
         env_prefix="APP_",
         validate_default=True,
     )
@@ -277,48 +249,8 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Get cached settings instance"""
-    logger.info("🚀 Initializing application configuration...")
-    
-    try:
-        env_file = ".env"
-        if os.path.exists(env_file):
-            logger.info(f"📁 Loading configuration from {env_file}")
-        else:
-            logger.warning(f"⚠️  {env_file} not found, using environment variables and defaults")
-        
-        settings = Settings()
-        
-        logger.info(f"✅ Configuration loaded successfully for {settings.app_name} v{settings.app_version}")
-        logger.info(f"   Environment: {settings.environment}")
-        logger.info(f"   Debug mode: {'Enabled' if settings.debug else 'Disabled'}")
-        logger.info(f"   Log level: {settings.log_level}")
-        
-        # Log LLM configuration
-        logger.info("🤖 LLM Provider: Llama3 (Primary)")
-        logger.info(f"   Model: {settings.llama3_model}")
-        logger.info(f"   API URL: {settings.llama3_api_url}")
-        logger.info(f"   Fallback: Heuristic")
-        
-        # Log service connections
-        logger.info("🔌 Service Connections:")
-        logger.info(f"   PostgreSQL: {settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}")
-        logger.info(f"   Redis: {settings.redis_host}:{settings.redis_port}")
-        logger.info(f"   RabbitMQ: {settings.rabbitmq_host}:{settings.rabbitmq_port}")
-
-        
-        # Production warnings
-        if settings.is_production:
-            if settings.debug:
-                logger.warning("🚨 WARNING: Debug mode is enabled in production!")
-            if not settings.llama3_api_key:
-                logger.warning("⚠️  WARNING: Llama3 API key not set!")
-        
-        return settings
-        
-    except Exception as e:
-        logger.critical(f"❌ Failed to load configuration: {str(e)}")
-        raise
+    logger.info("Initializing settings...")
+    return Settings()
 
 
 settings = get_settings()

@@ -1,250 +1,95 @@
-version: "3.9"
+name: aiapk
 
 services:
-  # ============================
-  # PostgreSQL Database
-  # ============================
   postgres:
     image: postgres:16-alpine
     container_name: aiapk-postgres
-    restart: unless-stopped
+    env_file: .env
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-admin}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
-      POSTGRES_DB: ${POSTGRES_DB:-aiapk_generation_db}
-      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
-      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_DB: appdb
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: devpass
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_PORT}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./infrastructure/init-scripts:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aiservice_admin} -d ${POSTGRES_DB:-aiapk_generation_db}" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER}" ]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
-    networks:
-      - aiapk-network
-    deploy:
-      resources:
-        limits:
-          cpus: "2.0"
-          memory: 2g
-        reservations:
-          cpus: "0.5"
-          memory: 512m
+    restart: unless-stopped
 
-  # ============================
-  # Redis (Cache + Celery Broker + Result Backend)
-  # ============================
   redis:
     image: redis:7-alpine
     container_name: aiapk-redis
-    restart: unless-stopped
     command: >
-      redis-server  --appendonly yes  --maxmemory 2gb  --maxmemory-policy allkeys-lru  --requirepass ${REDIS_PASSWORD:-redis_secure_password} --save 60 1000 --save 300 100 --save 900 10 --tcp-backlog 511 --timeout 0 --tcp-keepalive 300
+      redis-server --requirepass ${REDIS_PASSWORD} --appendonly yes
+    env_file: .env
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "${REDIS_PORT}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: [ "CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-password}", "ping" ]
-      interval: 5s
-      timeout: 3s
+      test: [ "CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping" ]
+      interval: 10s
+      timeout: 5s
       retries: 5
-      start_period: 5s
-    networks:
-      - aiapk-network
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 2g
-        reservations:
-          cpus: "0.25"
-          memory: 256m
+    restart: unless-stopped
 
-  # ============================
-  # AI Service API
-  # ============================
   api:
+    image: aiapk-api:local
     build:
       context: ../ai-service
       dockerfile: Dockerfile
-    image: aiapk-api:latest
     container_name: aiapk-api
-    restart: unless-stopped
-    command: >
-      uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4 --loop asyncio --log-level info
+    env_file:
+      - .env
+      - ../ai-service/.env
+    ports:
+      - "${API_PORT}:8000"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    environment:
-      # Application
-      APP_NAME: "AI APK Generation Service"
-      APP_VERSION: "1.0.0"
-      APP_ENVIRONMENT: ${ENVIRONMENT:-production}
-      APP_DEBUG: ${DEBUG:-false}
-      APP_LOG_LEVEL: ${LOG_LEVEL:-INFO}
-
-      # Database
-      APP_POSTGRES_HOST: postgres
-      APP_POSTGRES_PORT: 5432
-      APP_POSTGRES_DB: ${POSTGRES_DB:-aiapk_generation_db}
-      APP_POSTGRES_USER: ${POSTGRES_USER:-aiservice_admin}
-      APP_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secure_password_change_me}
-
-      # Redis
-      APP_REDIS_HOST: redis
-      APP_REDIS_PORT: 6379
-      APP_REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_secure_password}
-      APP_REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379
-
-      # Celery (Redis as broker AND backend)
-      APP_CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379/0
-      APP_CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379/1
-
-      # LLM Configuration
-      APP_LLAMA3_API_URL: ${LLAMA3_API_URL:-https://fastchat.ideeza.com/v1/chat/completions}
-      APP_LLAMA3_MODEL: ${LLAMA3_MODEL:-llama-3-70b-instruct}
-      APP_LLAMA3_API_KEY: ${LLAMA3_API_KEY:-}
-      APP_LLAMA3_TIMEOUT: ${LLAMA3_TIMEOUT:-60.0}
-      APP_LLAMA3_MAX_TOKENS: ${LLAMA3_MAX_TOKENS:-4096}
-
-      # Rate Limiting
-      APP_RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
-      APP_RATE_LIMIT_REQUESTS_PER_HOUR: ${RATE_LIMIT_REQUESTS_PER_HOUR:-100}
-
-      # CORS
-      APP_CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000","http://localhost:8000"]}
-    ports:
-      - "${API_PORT:-8000}:8000"
-    volumes:
-      - ./ai-service/logs:/app/logs
-      - ./ai-service/uploads:/app/uploads
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8000/health/live" ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    networks:
-      - aiapk-network
+    restart: on-failure
     deploy:
       resources:
         limits:
-          cpus: "2.0"
-          memory: 4g
-        reservations:
-          cpus: "0.5"
+          cpus: "1.0"
           memory: 1g
 
-  # ============================
-  # Celery Worker (AI Processing)
-  # ============================
   celery-worker:
-    image: aiapk-api:latest
+    image: aiapk-api:local
     container_name: aiapk-celery-worker
-    restart: unless-stopped
-    command: >
-      celery -A app.core.celery_app worker --loglevel=INFO --concurrency=4 --max-tasks-per-child=100 --task-events --without-gossip --without-mingle --without-heartbeat
+    command: celery -A app.core.celery_app.celery_app worker -l info
+    env_file:
+      - .env
+      - ../ai-service/.env
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
-    environment:
-      # Application
-      APP_NAME: "AI APK Generation Service - Worker"
-      APP_ENVIRONMENT: ${ENVIRONMENT:-production}
-      APP_LOG_LEVEL: ${LOG_LEVEL:-INFO}
-
-      # Database
-      APP_POSTGRES_HOST: postgres
-      APP_POSTGRES_PORT: 5432
-      APP_POSTGRES_DB: ${POSTGRES_DB:-aiapk_generation_db}
-      APP_POSTGRES_USER: ${POSTGRES_USER:-aiservice_admin}
-      APP_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secure_password_change_me}
-
-      # Redis
-      APP_REDIS_HOST: redis
-      APP_REDIS_PORT: 6379
-      APP_REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_secure_password}
-      APP_REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379
-
-      # Celery
-      APP_CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379/0
-      APP_CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379/1
-
-      # LLM Configuration
-      APP_LLAMA3_API_URL: ${LLAMA3_API_URL:-https://fastchat.ideeza.com/v1/chat/completions}
-      APP_LLAMA3_MODEL: ${LLAMA3_MODEL:-llama-3-70b-instruct}
-      APP_LLAMA3_API_KEY: ${LLAMA3_API_KEY:-}
-      APP_LLAMA3_TIMEOUT: ${LLAMA3_TIMEOUT:-60.0}
-      APP_LLAMA3_MAX_TOKENS: ${LLAMA3_MAX_TOKENS:-4096}
-    volumes:
-      - ../ai-service/logs:/app/logs
-    healthcheck:
-      test: [ "CMD-SHELL", "celery -A app.core.celery_app inspect ping || exit 1" ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    networks:
-      - aiapk-network
+    restart: on-failure
     deploy:
       resources:
         limits:
-          cpus: "4.0"
-          memory: 8g
-        reservations:
           cpus: "1.0"
-          memory: 2g
+          memory: 1g
 
-  # ============================
-  # Flower (Celery Monitoring)
-  # ============================
   flower:
-    image: aiapk-api:latest
+    image: aiapk-api:local
     container_name: aiapk-flower
-    restart: unless-stopped
-    command: >
-      celery -A app.core.celery_app flower --port=5555 --broker=redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379/0 --basic-auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-admin}
+    env_file: .env
+    environment:
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+    ports:
+      - "${FLOWER_PORT}:5555"
     depends_on:
       redis:
         condition: service_healthy
-    environment:
-      APP_CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379/0
-      APP_CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-redis_secure_password}@redis:6379/1
-    ports:
-      - "${FLOWER_PORT:-5555}:5555"
-    networks:
-      - aiapk-network
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 512m
+    restart: unless-stopped
 
-# ============================
-# Volumes
-# ============================
 volumes:
   postgres_data:
-    name: aiapk_postgres_data
-    driver: local
   redis_data:
-    name: aiapk_redis_data
-    driver: local
-
-# ============================
-# Network
-# ============================
-networks:
-  aiapk-network:
-    name: aiapk_network
-    driver: bridge

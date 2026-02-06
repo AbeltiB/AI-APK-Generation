@@ -30,7 +30,7 @@ class CacheManager:
         Creates a connection pool and tests the connection.
         """
         try:
-            self.client = await redis.from_url(
+            self.client = redis.from_url(
                 settings.redis_url,
                 encoding="utf-8",
                 decode_responses=True,

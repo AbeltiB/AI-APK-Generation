@@ -39,11 +39,12 @@ class DatabaseManager:
             
             # Create connection pool
             self.pool = await asyncpg.create_pool(
-                host=settings.postgres_host,
-                port=settings.postgres_port,
-                database=settings.postgres_db,
-                user=settings.postgres_user,
-                password=settings.postgres_password,
+                #host=settings.postgres_host,
+                #port=settings.postgres_port,
+                #database=settings.postgres_db,
+                #user=settings.postgres_user,
+                #password=settings.postgres_password,
+                dsn=settings.database_url,
                 min_size=settings.postgres_min_connections,
                 max_size=settings.postgres_max_connections,
                 command_timeout=30,

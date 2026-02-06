@@ -114,9 +114,9 @@ class Settings(BaseSettings):
     # -------------------------
     postgres_host: str = "localhost"
     postgres_port: int = 5432
-    postgres_db: str = "appbuilder"
+    postgres_db: str = "appdb"
     postgres_user: str = "admin"
-    postgres_password: str = "password"
+    postgres_password: str = "devpass"
     postgres_min_connections: int = 5
     postgres_max_connections: int = 20
     postgres_connection_timeout: int = 30

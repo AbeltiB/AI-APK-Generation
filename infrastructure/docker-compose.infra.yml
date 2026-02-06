@@ -8,11 +8,14 @@ services:
       POSTGRES_DB: appdb
     ports:
       - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U admin -d aiapk" ]
+      test: [ "CMD-SHELL", "pg_isready -U admin -d appdb" ]
       interval: 5s
       timeout: 3s
       retries: 5
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
@@ -20,18 +23,34 @@ services:
     command: redis-server --appendonly yes
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
       timeout: 3s
       retries: 5
+    restart: unless-stopped
 
   rabbitmq:
     image: rabbitmq:3.12-management-alpine
     container_name: local-rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: admin
-      RABBITMQ_DEFAULT_PASS: admin
+      RABBITMQ_DEFAULT_PASS: password
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "5672:5672"   # AMQP
+      - "15672:15672" # Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: [ "CMD", "rabbitmq-diagnostics", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:

@@ -4,6 +4,7 @@ Uses LLM Orchestrator (Llama3 → Heuristic fallback)
 """
 import json
 import asyncio
+import re
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timezone
 
@@ -386,97 +387,263 @@ class LayoutGenerator:
         raise last_error or LayoutGenerationError("All retries failed")
     
     async def _parse_layout_json(self, response_text: str) -> Dict[str, Any]:
-        """Parse layout JSON from LLM response"""
+        """Parse layout JSON from LLM response with robust error handling"""
         
-        # Remove markdown code blocks
-        if response_text.startswith("```"):
-            parts = response_text.split("```")
-            if len(parts) >= 3:
-                response_text = parts[1]
-                if response_text.startswith("json"):
-                    response_text = response_text[4:]
-                response_text = response_text.strip()
+        # Make a copy for logging
+        original_text = response_text[:500] + "..." if len(response_text) > 500 else response_text
         
-        # Parse JSON
+        logger.debug(f"Raw LLM response (first 500 chars): {original_text}")
+        
+        # Step 1: Extract JSON from markdown
+        cleaned_text = self._extract_json_from_markdown(response_text)
+
+        # adress the llama3 double curly brace issue
+        cleaned_text = self._fix_double_curly_braces(cleaned_text)
+        
+        # Step 2: Normalize JSON format
+        cleaned_text = self._normalize_json_format(cleaned_text)
+        
+        # Step 3: Try to parse
         try:
-            return json.loads(response_text)
+            result = json.loads(cleaned_text)
+            logger.debug(f"✅ JSON parsed successfully: {len(cleaned_text)} chars")
+            return result
         except json.JSONDecodeError as e:
-            logger.error(f"JSON parse error: {e}")
-            raise LayoutGenerationError(f"Could not parse layout JSON: {e}")
+            # Try to fix common JSON issues
+            logger.warning(f"Initial JSON parse failed, attempting fixes: {e}")
+            
+            # Try with additional fixes
+            cleaned_text = self._attempt_json_fixes(cleaned_text)
+            
+            try:
+                result = json.loads(cleaned_text)
+                logger.debug(f"✅ JSON parsed after fixes: {len(cleaned_text)} chars")
+                return result
+            except json.JSONDecodeError as e2:
+                logger.error(f"Final JSON parse error: {e2}")
+                logger.debug(f"Failed text: {cleaned_text[:500]}...")
+                raise LayoutGenerationError(f"Could not parse layout JSON after fixes: {e2}")
+
+    def _fix_double_curly_braces(self, text: str) -> str:
+        """Fix double curly braces issue: {{ }} -> { }"""
+        # Replace {{ with {
+        text = text.replace('{{', '{')
+        # Replace }} with }
+        text = text.replace('}}', '}')
+        return text
+    
+    def _extract_json_from_markdown(self, text: str) -> str:
+        """Extract JSON from markdown code blocks"""
+        text = text.strip()
+        
+        # Remove ```json and ``` markers
+        if text.startswith("```json"):
+            text = text[7:]
+        elif text.startswith("```"):
+            text = text[3:]
+        
+        if text.endswith("```"):
+            text = text[:-3]
+        
+        # Also handle potential language specification
+        lines = text.split('\n')
+        if lines and lines[0].strip() in ["json", "JavaScript", "js"]:
+            lines = lines[1:]
+            text = '\n'.join(lines)
+        
+        return text.strip()
+    
+    def _normalize_json_format(self, text: str) -> str:
+        """Normalize JSON format by fixing common issues"""
+        
+        # Fix 1: Replace single quotes with double quotes (carefully)
+        # We need to avoid replacing apostrophes inside strings
+        lines = []
+        in_string = False
+        escape_next = False
+        
+        for char in text:
+            if escape_next:
+                lines.append(char)
+                escape_next = False
+                continue
+                
+            if char == '\\':
+                escape_next = True
+                lines.append(char)
+            elif char == '"':
+                in_string = not in_string
+                lines.append(char)
+            elif char == "'" and not in_string:
+                # Single quote outside a string - replace with double quote
+                lines.append('"')
+            else:
+                lines.append(char)
+        
+        text = ''.join(lines)
+        
+        # Fix 2: Handle Python-style booleans
+        text = text.replace(': True', ': true')
+        text = text.replace(': False', ': false')
+        text = text.replace(': None', ': null')
+        
+        # Fix 3: Remove trailing commas
+        text = re.sub(r',\s*}', '}', text)
+        text = re.sub(r',\s*]', ']', text)
+        
+        # Fix 4: Ensure property names are quoted
+        # Find unquoted property names
+        lines = text.split('\n')
+        fixed_lines = []
+        
+        for line in lines:
+            # Simple pattern to find unquoted property names at start of line
+            line = re.sub(r'(\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:\s*)', r'\1"\2"\3', line)
+            fixed_lines.append(line)
+        
+        text = '\n'.join(fixed_lines)
+        
+        return text
+    
+    def _attempt_json_fixes(self, text: str) -> str:
+        """Attempt more aggressive JSON fixes"""
+        
+        # Try to find JSON object in text
+        import re
+        
+        # Look for { ... } pattern
+        match = re.search(r'(\{.*\})', text, re.DOTALL)
+        if match:
+            text = match.group(1)
+        
+        # If still failing, try a simple approach - just replace all single quotes
+        # This is a last resort
+        if "'" in text:
+            # Replace all single quotes with double quotes
+            # This might break strings with apostrophes, but it's better than failing
+            text = text.replace("'", '"')
+        
+        return text
     
     async def _convert_to_enhanced_components(
         self,
         components_data: List[Dict[str, Any]],
         screen_id: str
     ) -> List[EnhancedComponentDefinition]:
-        """Convert LLM's component data to enhanced definitions"""
+        """Convert LLM's component data to enhanced definitions with better property handling"""
         
         enhanced_components = []
         
         for idx, comp_data in enumerate(components_data):
             try:
                 comp_id = comp_data.get('id', f"comp_{screen_id}_{idx}")
-                comp_type = comp_data.get('type')
+                comp_type = comp_data.get('type', 'Unknown')
                 
                 if comp_type not in settings.available_components:
-                    logger.warning(f"Unsupported component type: {comp_type}, skipping")
+                    logger.warning(f"Unsupported component type from LLM: {comp_type}, skipping")
                     continue
                 
-                # Convert properties to PropertyValue format
+                # Initialize properties dict
                 properties = {}
-                raw_properties = comp_data.get('properties', {})
                 
-                for key, value in raw_properties.items():
-                    if isinstance(value, dict) and 'type' in value:
-                        properties[key] = PropertyValue(**value)
-                    else:
-                        properties[key] = PropertyValue(type="literal", value=value)
-                
-                # Extract or generate position/size
+                # Handle style separately
+                style_data = comp_data.get('style', {})
                 position = comp_data.get('position', {'x': 0, 'y': 0})
                 constraints = comp_data.get('constraints', {})
                 
-                # Ensure style property
-                if 'style' not in properties:
-                    width, height = self.component_defaults.get(comp_type, (280, 44))
-                    
-                    width_str = constraints.get('width', 'auto')
-                    if width_str != 'auto':
-                        try:
-                            if '%' in str(width_str):
-                                percentage = float(str(width_str).rstrip('%'))
-                                width = int(self.canvas_width * percentage / 100)
-                            else:
-                                width = int(str(width_str).rstrip('px'))
-                        except:
-                            pass
-                    
-                    height = constraints.get('height', height)
-                    
-                    properties['style'] = PropertyValue(
-                        type="literal",
-                        value={
-                            'left': position.get('x', 0),
-                            'top': position.get('y', 0),
-                            'width': width,
-                            'height': height
-                        }
-                    )
+                # Get default dimensions
+                width, height = self.component_defaults.get(comp_type, (280, 44))
                 
+                # Calculate actual dimensions
+                width_value = constraints.get('width', width)
+                height_value = constraints.get('height', height)
+                
+                # Parse width if it's a string
+                if isinstance(width_value, str):
+                    if width_value == 'auto' or width_value == 'fill':
+                        width_value = 280
+                    elif '%' in width_value:
+                        try:
+                            percentage = float(width_value.strip('%'))
+                            width_value = int(self.canvas_width * percentage / 100)
+                        except:
+                            width_value = 280
+                    elif 'px' in width_value:
+                        try:
+                            width_value = int(width_value.strip('px'))
+                        except:
+                            width_value = 280
+                
+                # Parse height if it's a string
+                if isinstance(height_value, str):
+                    if height_value == 'auto':
+                        height_value = 44
+                    elif 'px' in height_value:
+                        try:
+                            height_value = int(height_value.strip('px'))
+                        except:
+                            height_value = 44
+                
+                # Create style property
+                style_value = {
+                    'left': position.get('x', 0),
+                    'top': position.get('y', 0),
+                    'width': width_value,
+                    'height': height_value
+                }
+                
+                # Merge with any style from comp_data
+                if isinstance(style_data, dict):
+                    style_value.update(style_data)
+                
+                properties['style'] = PropertyValue(
+                    type="literal",
+                    value=style_value
+                )
+                
+                # Add component-specific properties from comp_data
+                for key, value in comp_data.items():
+                    if key not in ['id', 'type', 'style', 'position', 'constraints', 'z_index']:
+                        properties[key] = PropertyValue(type="literal", value=value)
+                
+                # Ensure required properties exist
+                if comp_type == 'Checkbox' and 'checked' not in properties:
+                    properties['checked'] = PropertyValue(type="literal", value=False)
+                if comp_type == 'Switch' and 'checked' not in properties:
+                    properties['checked'] = PropertyValue(type="literal", value=False)
+                if comp_type == 'Slider' and 'value' not in properties:
+                    properties['value'] = PropertyValue(type="literal", value=50)
+                if comp_type == 'ProgressBar' and 'value' not in properties:
+                    properties['value'] = PropertyValue(type="literal", value=0.5)
+                if comp_type == 'Button' and 'value' not in properties:
+                    properties['value'] = PropertyValue(type="literal", value="Button")
+                if comp_type == 'Text' and 'value' not in properties:
+                    properties['value'] = PropertyValue(type="literal", value="Text")
+                if comp_type == 'InputText' and 'placeholder' not in properties:
+                    properties['placeholder'] = PropertyValue(type="literal", value="Enter text")
+                
+                # Get z-index
+                z_index = comp_data.get('z_index', idx)
+                
+                # Create enhanced component
                 enhanced = EnhancedComponentDefinition(
                     component_id=comp_id,
                     component_type=comp_type,
                     properties=properties,
-                    z_index=idx,
+                    z_index=z_index,
                     parent_id=None,
                     children_ids=[]
                 )
                 
                 enhanced_components.append(enhanced)
+                logger.debug(f"Converted component: {comp_type} at position {style_value['left']}, {style_value['top']}")
                 
             except Exception as e:
-                logger.warning(f"Failed to convert component {idx}: {e}")
+                logger.warning(f"Failed to convert component {idx} (type: {comp_data.get('type', 'unknown')}): {e}")
                 continue
+        
+        if not enhanced_components:
+            raise LayoutGenerationError("No components could be converted from LLM response")
         
         return enhanced_components
     
@@ -496,6 +663,7 @@ class LayoutGenerator:
         
         for idx, comp_type in enumerate(screen.components):
             if comp_type not in settings.available_components:
+                logger.warning(f"Unsupported component type in heuristic: {comp_type}")
                 continue
             
             width, height = self.component_defaults.get(comp_type, (280, 44))
@@ -503,6 +671,7 @@ class LayoutGenerator:
             
             comp_id = f"{comp_type.lower()}_{idx}"
             
+            # Base properties
             properties = {
                 'style': PropertyValue(
                     type="literal",
@@ -518,23 +687,66 @@ class LayoutGenerator:
             # Add component-specific properties
             if comp_type == 'Button':
                 properties['value'] = PropertyValue(type="literal", value="Click Me")
+                properties['onClick'] = PropertyValue(type="literal", value="")
             elif comp_type == 'Text':
-                properties['value'] = PropertyValue(type="literal", value="Text")
+                properties['value'] = PropertyValue(type="literal", value="Sample Text")
+                properties['color'] = PropertyValue(type="literal", value="#000000")
             elif comp_type == 'InputText':
                 properties['placeholder'] = PropertyValue(type="literal", value="Enter text")
+                properties['value'] = PropertyValue(type="literal", value="")
+            elif comp_type == 'Checkbox':
+                # ✅ FIXED: Add required 'checked' property
+                properties['checked'] = PropertyValue(type="literal", value=False)
+                properties['label'] = PropertyValue(type="literal", value="Check me")
+            elif comp_type == 'Switch':
+                properties['checked'] = PropertyValue(type="literal", value=False)
+            elif comp_type == 'Slider':
+                properties['value'] = PropertyValue(type="literal", value=50)
+                properties['min'] = PropertyValue(type="literal", value=0)
+                properties['max'] = PropertyValue(type="literal", value=100)
+            elif comp_type == 'ProgressBar':
+                properties['value'] = PropertyValue(type="literal", value=0.5)
+                properties['max'] = PropertyValue(type="literal", value=1.0)
+            elif comp_type == 'TextArea':
+                properties['placeholder'] = PropertyValue(type="literal", value="Enter text here...")
+                properties['value'] = PropertyValue(type="literal", value="")
+            elif comp_type == 'Spinner':
+                properties['value'] = PropertyValue(type="literal", value=0)
+            elif comp_type == 'DatePicker':
+                properties['value'] = PropertyValue(type="literal", value="")
+            elif comp_type == 'TimePicker':
+                properties['value'] = PropertyValue(type="literal", value="")
+            elif comp_type == 'ColorPicker':
+                properties['value'] = PropertyValue(type="literal", value="#000000")
+            elif comp_type == 'Map':
+                properties['latitude'] = PropertyValue(type="literal", value=0.0)
+                properties['longitude'] = PropertyValue(type="literal", value=0.0)
+            elif comp_type == 'Chart':
+                properties['data'] = PropertyValue(type="literal", value=[])
             
-            component = EnhancedComponentDefinition(
-                component_id=comp_id,
-                component_type=comp_type,
-                properties=properties,
-                z_index=idx
-            )
-            
-            components.append(component)
-            current_y += height + 16
+            try:
+                component = EnhancedComponentDefinition(
+                    component_id=comp_id,
+                    component_type=comp_type,
+                    properties=properties,
+                    z_index=idx
+                )
+                
+                components.append(component)
+                logger.debug(f"Heuristic created component: {comp_type}")
+                
+            except Exception as e:
+                logger.error(f"Failed to create {comp_type} in heuristic: {e}")
+                # Skip this component but continue with others
+        
+        # Move to next position
+        current_y += height + 16
+    
+        if not components:
+            raise LayoutGenerationError(f"No components could be generated for screen: {screen.name}")
         
         logger.info(
-            "layout.heuristic.generated",
+            "✅ layout.heuristic.generated",
             extra={"components": len(components)}
         )
         
@@ -664,6 +876,29 @@ class LayoutGenerator:
             'llama3_success_rate': (self.stats['llama3_successes'] / total * 100) if total > 0 else 0,
             'collisions_resolved': self.stats['collisions_resolved']
         }
+    
+    async def test_json_parsing(self):
+        """Test JSON parsing with common failure cases"""
+        
+        test_cases = [
+            # Single quotes
+            "{'components': [{'type': 'Button', 'checked': true}]}",
+            # Markdown with single quotes
+            "```json\n{'components': []}\n```",
+            # Python-style booleans
+            "{components: [{type: 'Checkbox', checked: True}]}",
+            # Trailing comma
+            "{'components': [],}",
+        ]
+        
+        for i, test in enumerate(test_cases):
+            print(f"\nTest case {i+1}:")
+            print(f"Input: {test}")
+            try:
+                result = await self._parse_layout_json(test)
+                print(f"✅ Success: {result}")
+            except Exception as e:
+                print(f"❌ Failed: {e}")
 
 
 # Global layout generator instance

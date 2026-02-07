@@ -242,13 +242,12 @@ async def save_results_with_state(request: AIRequest, result: Dict[str, Any]):
         project_id = await db_manager.save_project(
             user_id=request.user_id,
             project_name=f"Generated_{request.task_id[:8]}",
-            architecture=result.get('architecture', {}),
-            layout=result.get('layout', {}),
-            blockly=result.get('blockly', {}),
-            # Additional state fields
-            state_project_id=metadata.get("project_id"),
-            state_version=metadata.get("version", 1),
-            state_schema_version=metadata.get("schema_version"),
+            architecture={
+                **result.get("architecture", {}),
+                "_state": metadata,
+            },
+            layout=result.get("layout", {}),
+            blockly=result.get("blockly", {}),
         )
         
         logger.info(

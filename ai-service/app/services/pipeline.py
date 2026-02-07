@@ -252,10 +252,19 @@ class Ar3t24NpUrJMNunMMASmhAM953bFGeLXzN7(PipelineStage):
         # Generate architecture
         enriched_context = context.get('enriched_context')
         
-        architecture = await architecture_generator.generate(
+        result = await architecture_generator.generate(
             prompt=request.prompt,
             context=enriched_context
         )
+
+        # ✅ FIX: Handle both tuple and single object returns
+        # Architecture generator may return tuple (architecture, metadata) or just architecture
+        if isinstance(result, tuple):
+            architecture = result[0]  # First element is architecture
+            metadata = result[1] if len(result) > 1 else {}  # Second is metadata
+            context['architecture_metadata'] = metadata  # Store metadata
+        else:
+            architecture = result  # LLM returns single object
         
         context['architecture'] = architecture
         
@@ -298,23 +307,37 @@ class LayoutGenerationStage(PipelineStage):
                 logger.info("pipeline.layout.from_cache")
                 return {"skipped": True, "reason": "cache_hit", "from_cache": True}
         
-        architecture = context.get('architecture')
+        architecture_raw = context.get('architecture')
         
-        if not architecture:
+        if not architecture_raw:
             raise ValueError("Architecture not available for layout generation")
         
+        if isinstance(architecture_raw, tuple) and len(architecture_raw) >= 1:
+            architecture = architecture_raw[0]
+            architecture_metadata = architecture_raw[1] if len(architecture_raw) > 1 else {}
+            context['architecture_metadata'] = architecture_metadata
+        else:
+            architecture = architecture_raw
         # Generate layout for each screen
         layouts = {}
+        layout_metadata_list = []
         
         for screen in architecture.screens:
-            layout = await layout_generator.generate(
+            # ✅ FIX: Properly unpack tuple (layout, metadata) from generate()
+            # The layout_generator.generate() method returns (EnhancedLayoutDefinition, Dict[str, Any])
+            layout, metadata = await layout_generator.generate(
                 architecture=architecture,
                 screen_id=screen.id
             )
             
             layouts[screen.id] = layout
+            layout_metadata_list.append({
+                'screen_id': screen.id,
+                'metadata': metadata
+            })
         
         context['layouts'] = layouts
+        context['layout_metadata'] = layout_metadata_list
         
         logger.info(
             "pipeline.layout.generated",
@@ -557,7 +580,8 @@ class Pipeline:
                     }
                 )
                 
-                return result
+                if isinstance(blockly, tuple):
+                    blockly = {"blocks": blockly[0], "metadata": blockly[1]}
                 
             except Exception as e:
                 logger.error(

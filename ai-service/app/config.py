@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     # -------------------------
     llama3_api_url: str = "https://fastchat.ideeza.com/v1/chat/completions"
     llama3_model: str = "llama-3-70b-instruct"
-    llama3_api_key: Optional[str] = None
+    llama3_api_key: Optional[str] = "pJ53Y9gusCRsIqblyMyI2E9r1y1FeLOGDUrY9ZHSiKKjRy9MabGmBUpsL2nAQ6Mz"
     llama3_timeout: float = 60.0
     llama3_max_tokens: int = 4096
     llama3_temperature: float = 0.7
@@ -122,6 +122,8 @@ class Settings(BaseSettings):
     postgres_connection_timeout: int = 30
     postgres_statement_timeout: int = 30000
     postgres_pool_recycle: int = 3600
+
+    
 
     @property
     def database_url(self) -> str:
@@ -254,3 +256,4 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+print("LLAMA3_API_KEY =", repr(settings.llama3_api_key))

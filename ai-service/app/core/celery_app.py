@@ -102,3 +102,15 @@ def task_failure_handler(task_id, exception, args, kwargs, traceback, einfo, **e
 
 
 logger.info("✅ Celery app initialized with Redis broker/backend")
+
+# ================================
+# FORCE TASK REGISTRATION (WINDOWS SAFE)
+# ================================
+
+celery_app.autodiscover_tasks(
+    packages=["app.core"],
+    force=True,
+)
+
+# Explicit import fallback (CRITICAL on Windows)
+import app.core.tasks  # noqa

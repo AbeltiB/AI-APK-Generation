@@ -20,12 +20,12 @@ from app.utils.logging import get_logger, log_context, trace_async
 logger = get_logger(__name__)
 
 
-class Ar3t24NpUrJMNunMMASmhAM953bFGeLXzN7(Exception):
+class ArchitectureGenerationStage(Exception):
     """Base exception for architecture generation errors"""
     pass
 
 
-class InvalidArchitectureError(Ar3t24NpUrJMNunMMASmhAM953bFGeLXzN7):
+class InvalidArchitectureError(ArchitectureGenerationStage):
     """Raised when generated architecture is invalid"""
     pass
 
@@ -108,7 +108,7 @@ class ArchitectureGenerator:
             Tuple of (ArchitectureDesign, metadata)
             
         Raises:
-            Ar3t24NpUrJMNunMMASmhAM953bFGeLXzN7: Only if both Llama3 and heuristic fail
+            ArchitectureGenerationStage: Only if both Llama3 and heuristic fail
         """
         self.stats['total_requests'] += 1
         
@@ -195,7 +195,7 @@ class ArchitectureGenerator:
                     )
                     
                     self.stats['failed'] += 1
-                    raise Ar3t24NpUrJMNunMMASmhAM953bFGeLXzN7(
+                    raise ArchitectureGenerationStage(
                         f"Both LLM and heuristic generation failed. "
                         f"LLM: {llm_error}, Heuristic: {heuristic_error}"
                     )
@@ -253,7 +253,7 @@ class ArchitectureGenerator:
                     extra={"error": str(validation_error)},
                     exc_info=validation_error
                 )
-                raise Ar3t24NpUrJMNunMMASmhAM953bFGeLXzN7(
+                raise ArchitectureGenerationStage(
                     f"Validation failed: {validation_error}"
                 )
             
@@ -347,7 +347,7 @@ class ArchitectureGenerator:
                     )
                     raise last_error
         
-        raise last_error or Ar3t24NpUrJMNunMMASmhAM953bFGeLXzN7("All retries failed")
+        raise last_error or ArchitectureGenerationStage("All retries failed")
     
     async def _generate_new_architecture(
         self,

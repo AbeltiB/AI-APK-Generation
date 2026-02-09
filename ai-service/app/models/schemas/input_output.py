@@ -15,11 +15,11 @@ class PromptContext(BaseModel):
 
 
 class AIRequest(BaseModel):
-    """AI request message received from RabbitMQ"""
+    """AI request message received from Celery"""
     task_id: str = Field(default_factory=lambda: str(uuid4()))
     user_id: str
-    session_id: str
-    socket_id: str
+    session_id: str = Field(default="unknown")
+    socket_id: str = Field(default="unknown")
     prompt: str = Field(..., min_length=10, max_length=2000)
     context: Optional[PromptContext] = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -15,7 +15,7 @@ AI Pipeline - Llama3 Version
 All generation uses Llama3 as primary provider with heuristic fallback.
 """
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime, timezone
 
 from app.models.schemas.input_output import AIRequest, ProgressUpdate, ErrorResponse, CompleteResponse
@@ -245,41 +245,76 @@ class Ar3t24NpUrJMNunMMASmhAM953bFGeLXzN7(PipelineStage):
             architecture_data = cached.get('architecture')
             
             if architecture_data:
-                context['architecture'] = ArchitectureDesign(**architecture_data)
-                logger.info("pipeline.architecture.from_cache")
-                return {"skipped": True, "reason": "cache_hit", "from_cache": True}
+                # Try to parse as ArchitectureDesign
+                try:
+                    if isinstance(architecture_data, dict):
+                        context['architecture'] = ArchitectureDesign(**architecture_data)
+                    else:
+                        context['architecture'] = architecture_data
+                    logger.info("pipeline.architecture.from_cache")
+                    return {"skipped": True, "reason": "cache_hit", "from_cache": True}
+                except Exception as e:
+                    logger.warning(f"Failed to parse cached architecture: {e}")
+                    # Continue with generation
+                    context['cache_hit'] = False
         
         # Generate architecture
         enriched_context = context.get('enriched_context')
         
-        result = await architecture_generator.generate(
-            prompt=request.prompt,
-            context=enriched_context
-        )
-
-        # ✅ FIX: Handle both tuple and single object returns
-        # Architecture generator may return tuple (architecture, metadata) or just architecture
-        if isinstance(result, tuple):
-            architecture = result[0]  # First element is architecture
-            metadata = result[1] if len(result) > 1 else {}  # Second is metadata
-            context['architecture_metadata'] = metadata  # Store metadata
-        else:
-            architecture = result  # LLM returns single object
-        
-        context['architecture'] = architecture
-        
-        logger.info(
-            "pipeline.architecture.generated",
-            extra={
-                "app_type": architecture.app_type,
-                "screens": len(architecture.screens)
+        try:
+            result = await architecture_generator.generate(
+                prompt=request.prompt,
+                context=enriched_context
+            )
+            
+            # Architecture generator returns (ArchitectureDesign, metadata) tuple
+            if isinstance(result, tuple) and len(result) >= 2:
+                architecture = result[0]  # ArchitectureDesign object
+                metadata = result[1]      # metadata dict
+                context['architecture_metadata'] = metadata
+                logger.debug(
+                    "pipeline.architecture.unpacked_tuple",
+                    extra={
+                        "generation_method": metadata.get('generation_method', 'unknown'),
+                        "provider": metadata.get('provider', 'unknown')
+                    }
+                )
+            else:
+                # Fallback for single object
+                architecture = result
+                metadata = {}
+                logger.warning("pipeline.architecture.unexpected_return_type")
+            
+            # Validate architecture
+            if not architecture or not isinstance(architecture, ArchitectureDesign):
+                logger.error("pipeline.architecture.invalid_type", 
+                           extra={"type": type(architecture).__name__ if architecture else "None"})
+                raise ValueError("Invalid architecture generated")
+            
+            context['architecture'] = architecture
+            
+            logger.info(
+                "pipeline.architecture.generated",
+                extra={
+                    "app_type": architecture.app_type if hasattr(architecture, 'app_type') else 'unknown',
+                    "screens": len(architecture.screens) if hasattr(architecture, 'screens') else 0,
+                    "generation_method": metadata.get('generation_method', 'unknown')
+                }
+            )
+            
+            return {
+                "app_type": architecture.app_type if hasattr(architecture, 'app_type') else 'unknown',
+                "screen_count": len(architecture.screens) if hasattr(architecture, 'screens') else 0,
+                "metadata": metadata
             }
-        )
-        
-        return {
-            "app_type": architecture.app_type,
-            "screen_count": len(architecture.screens)
-        }
+            
+        except Exception as e:
+            logger.error(
+                "pipeline.architecture.generation_failed",
+                extra={"error": str(e)},
+                exc_info=e
+            )
+            raise
 
 
 class LayoutGenerationStage(PipelineStage):
@@ -301,56 +336,93 @@ class LayoutGenerationStage(PipelineStage):
                 layouts = {}
                 if isinstance(layouts_data, dict):
                     for screen_id, layout_data in layouts_data.items():
-                        layouts[screen_id] = EnhancedLayoutDefinition(**layout_data)
+                        try:
+                            layouts[screen_id] = EnhancedLayoutDefinition(**layout_data)
+                        except Exception as e:
+                            logger.warning(f"Failed to parse cached layout for {screen_id}: {e}")
+                            continue
                 
                 context['layouts'] = layouts
                 logger.info("pipeline.layout.from_cache")
                 return {"skipped": True, "reason": "cache_hit", "from_cache": True}
         
-        architecture_raw = context.get('architecture')
+        architecture = context.get('architecture')
         
-        if not architecture_raw:
+        if not architecture:
             raise ValueError("Architecture not available for layout generation")
         
-        if isinstance(architecture_raw, tuple) and len(architecture_raw) >= 1:
-            architecture = architecture_raw[0]
-            architecture_metadata = architecture_raw[1] if len(architecture_raw) > 1 else {}
-            context['architecture_metadata'] = architecture_metadata
-        else:
-            architecture = architecture_raw
         # Generate layout for each screen
         layouts = {}
         layout_metadata_list = []
+        total_components = 0
         
-        for screen in architecture.screens:
-            # ✅ FIX: Properly unpack tuple (layout, metadata) from generate()
-            # The layout_generator.generate() method returns (EnhancedLayoutDefinition, Dict[str, Any])
-            layout, metadata = await layout_generator.generate(
-                architecture=architecture,
-                screen_id=screen.id
+        try:
+            if hasattr(architecture, 'screens') and architecture.screens:
+                for screen in architecture.screens:
+                    try:
+                        # The layout_generator.generate() method returns (EnhancedLayoutDefinition, Dict[str, Any])
+                        layout_result = await layout_generator.generate(
+                            architecture=architecture,
+                            screen_id=screen.id if hasattr(screen, 'id') else screen.screen_id
+                        )
+                        
+                        # Handle tuple return
+                        if isinstance(layout_result, tuple) and len(layout_result) >= 2:
+                            layout = layout_result[0]
+                            metadata = layout_result[1]
+                        else:
+                            layout = layout_result
+                            metadata = {}
+                        
+                        if layout and isinstance(layout, EnhancedLayoutDefinition):
+                            screen_id = layout.screen_id if hasattr(layout, 'screen_id') else screen.id
+                            layouts[screen_id] = layout
+                            layout_metadata_list.append({
+                                'screen_id': screen_id,
+                                'metadata': metadata
+                            })
+                            total_components += len(layout.components) if hasattr(layout, 'components') else 0
+                        else:
+                            logger.warning(f"Invalid layout generated for screen: {screen.id if hasattr(screen, 'id') else screen.screen_id}")
+                    except Exception as screen_error:
+                        logger.error(
+                            f"Failed to generate layout for screen: {screen.id if hasattr(screen, 'id') else screen.screen_id}",
+                            extra={"error": str(screen_error)}
+                        )
+                        # Continue with other screens
+            else:
+                logger.warning("No screens found in architecture")
+            
+            context['layouts'] = layouts
+            context['layout_metadata'] = layout_metadata_list
+            
+            logger.info(
+                "pipeline.layout.generated",
+                extra={
+                    "screen_count": len(layouts),
+                    "total_components": total_components
+                }
             )
             
-            layouts[screen.id] = layout
-            layout_metadata_list.append({
-                'screen_id': screen.id,
-                'metadata': metadata
-            })
-        
-        context['layouts'] = layouts
-        context['layout_metadata'] = layout_metadata_list
-        
-        logger.info(
-            "pipeline.layout.generated",
-            extra={
+            return {
                 "screen_count": len(layouts),
-                "total_components": sum(len(l.components) for l in layouts.values())
+                "total_components": total_components
             }
-        )
-        
-        return {
-            "screen_count": len(layouts),
-            "total_components": sum(len(l.components) for l in layouts.values())
-        }
+            
+        except Exception as e:
+            logger.error(
+                "pipeline.layout.generation_failed",
+                extra={"error": str(e)},
+                exc_info=e
+            )
+            # Create empty layouts as fallback
+            context['layouts'] = {}
+            context['layout_metadata'] = []
+            return {
+                "screen_count": 0,
+                "total_components": 0,
+                "fallback": True
+            }
 
 
 class BlocklyGenerationStage(PipelineStage):
@@ -376,27 +448,96 @@ class BlocklyGenerationStage(PipelineStage):
         layouts = context.get('layouts', {})
         
         if not architecture:
-            raise ValueError("Architecture not available for Blockly generation")
-        
-        # Generate Blockly
-        blockly = await blockly_generator.generate(
-            architecture=architecture,
-            layouts=layouts
-        )
-        
-        context['blockly'] = blockly
-        
-        logger.info(
-            "pipeline.blockly.generated",
-            extra={
-                "block_count": len(blockly.get('blocks', {}).get('blocks', [])),
-                "variable_count": len(blockly.get('variables', []))
+            logger.error("Architecture not available for Blockly generation")
+            # Create fallback blockly
+            blockly = self._create_empty_blockly("No architecture available")
+            context['blockly'] = blockly
+            return {
+                "block_count": 0,
+                "variable_count": 0,
+                "generation_failed": True,
+                "error": "No architecture"
             }
-        )
         
+        try:
+            # Generate Blockly
+            blockly = await blockly_generator.generate(
+                architecture=architecture,
+                layouts=layouts
+            )
+            
+            # Handle None return from blockly_generator
+            if blockly is None:
+                logger.error(
+                    "pipeline.blockly.generation_failed",
+                    extra={"error": "blockly_generator.generate() returned None"}
+                )
+                # Create empty blockly structure to prevent downstream errors
+                blockly = {
+                    'blocks': {'blocks': []},
+                    'variables': [],
+                    'generation_failed': True,
+                    'error': 'blockly_generator returned None'
+                }
+            
+            context['blockly'] = blockly
+            
+            # Safe access to nested structures with defaults
+            blocks_dict = blockly.get('blocks', {})
+            blocks_list = blocks_dict.get('blocks', []) if isinstance(blocks_dict, dict) else []
+            variables_list = blockly.get('variables', []) if isinstance(blockly.get('variables'), list) else []
+            
+            block_count = len(blocks_list)
+            variable_count = len(variables_list)
+            
+            logger.info(
+                "pipeline.blockly.generated",
+                extra={
+                    "block_count": block_count,
+                    "variable_count": variable_count,
+                    "generation_successful": not blockly.get('generation_failed', False)
+                }
+            )
+            
+            return {
+                "block_count": block_count,
+                "variable_count": variable_count,
+                "generation_successful": not blockly.get('generation_failed', False)
+            }
+            
+        except Exception as e:
+            logger.error(
+                "pipeline.blockly.generation_error",
+                extra={"error": str(e)},
+                exc_info=e
+            )
+            # Create fallback blockly
+            blockly = self._create_empty_blockly(f"Generation error: {str(e)[:100]}")
+            context['blockly'] = blockly
+            
+            return {
+                "block_count": 0,
+                "variable_count": 0,
+                "generation_failed": True,
+                "error": str(e)[:100]
+            }
+    
+    def _create_empty_blockly(self, reason: str = "") -> Dict[str, Any]:
+        """Create an empty but valid blockly structure"""
         return {
-            "block_count": len(blockly.get('blocks', {}).get('blocks', [])),
-            "variable_count": len(blockly.get('variables', []))
+            'blocks': {
+                'languageVersion': 0,
+                'blocks': []
+            },
+            'variables': [],
+            'custom_blocks': [],
+            'empty_fallback': True,
+            'fallback_reason': reason,
+            'metadata': {
+                'generation_method': 'empty_fallback',
+                'provider': 'fallback',
+                'generated_at': datetime.now(timezone.utc).isoformat() + "Z"
+            }
         }
 
 
@@ -419,35 +560,50 @@ class CacheSaveStage(PipelineStage):
         layouts = context.get('layouts', {})
         blockly = context.get('blockly')
         
-        if not all([architecture, layouts, blockly]):
+        if not all([architecture, blockly]):
             logger.warning("pipeline.cache_save.incomplete_result")
             return {"skipped": True, "reason": "incomplete_result"}
         
-        # Convert layouts to dict
-        layouts_dict = {}
-        for screen_id, layout in layouts.items():
-            layouts_dict[screen_id] = layout.dict() if hasattr(layout, 'dict') else layout
-        
-        # Build cache result
-        cache_result = {
-            'architecture': architecture.dict() if hasattr(architecture, 'dict') else architecture,
-            'layout': layouts_dict,
-            'blockly': blockly
-        }
-        
-        # Save to cache
-        await semantic_cache.cache_result(
-            prompt=request.prompt,
-            user_id=request.user_id,
-            result=cache_result
-        )
-        
-        logger.info(
-            "pipeline.cache_save.complete",
-            extra={"task_id": request.task_id}
-        )
-        
-        return {"cached": True}
+        try:
+            # Convert layouts to dict
+            layouts_dict = {}
+            if layouts:
+                for screen_id, layout in layouts.items():
+                    if hasattr(layout, 'dict'):
+                        layouts_dict[screen_id] = layout.dict()
+                    elif isinstance(layout, dict):
+                        layouts_dict[screen_id] = layout
+                    else:
+                        layouts_dict[screen_id] = str(layout)
+            
+            # Build cache result
+            cache_result = {
+                'architecture': architecture.dict() if hasattr(architecture, 'dict') else str(architecture),
+                'layout': layouts_dict,
+                'blockly': blockly
+            }
+            
+            # Save to cache
+            await semantic_cache.cache_result(
+                prompt=request.prompt,
+                user_id=request.user_id,
+                result=cache_result
+            )
+            
+            logger.info(
+                "pipeline.cache_save.complete",
+                extra={"task_id": request.task_id}
+            )
+            
+            return {"cached": True}
+            
+        except Exception as e:
+            logger.error(
+                "pipeline.cache_save.failed",
+                extra={"error": str(e)},
+                exc_info=e
+            )
+            return {"cached": False, "error": str(e)}
 
 
 class Pipeline:
@@ -481,7 +637,9 @@ class Pipeline:
             'stage_times': {},
             'errors': [],
             'warnings': [],
-            'substitutions': []
+            'substitutions': [],
+            'cache_hit': False,
+            'cached_result': None
         }
         
         with log_context(
@@ -494,7 +652,7 @@ class Pipeline:
                 "pipeline.execution.started",
                 extra={
                     "task_id": request.task_id,
-                    "prompt_length": len(request.prompt)
+                    "prompt_length": len(request.prompt) if request.prompt else 0
                 }
             )
             
@@ -535,23 +693,54 @@ class Pipeline:
                         )
                         
                     except Exception as stage_error:
+                        stage_duration = int((time.time() - stage_start) * 1000)
+                        context['stage_times'][stage.name] = stage_duration
+                        
                         await stage.on_error(stage_error, request, context)
                         context['errors'].append({
                             'stage': stage.name,
-                            'error': str(stage_error)
+                            'error': str(stage_error),
+                            'duration_ms': stage_duration
                         })
-                        raise
+                        
+                        # If this is a critical stage, we might want to fail fast
+                        if stage.name in ['rate_limit', 'validation', 'intent_analysis']:
+                            raise
+                        
+                        # For generation stages, we can continue with fallbacks
+                        logger.warning(
+                            f"pipeline.stage.{stage.name}.failed_but_continuing",
+                            extra={"error": str(stage_error)[:200]}
+                        )
                 
                 # Build final result
                 total_time = int((time.time() - start_time) * 1000)
                 
+                # Get architecture
+                architecture = context.get('architecture')
+                if architecture and hasattr(architecture, 'dict'):
+                    architecture_data = architecture.dict()
+                else:
+                    architecture_data = str(architecture) if architecture else None
+                
+                # Get layouts
+                layouts_data = {}
+                layouts = context.get('layouts', {})
+                for screen_id, layout in layouts.items():
+                    if hasattr(layout, 'dict'):
+                        layouts_data[screen_id] = layout.dict()
+                    elif isinstance(layout, dict):
+                        layouts_data[screen_id] = layout
+                    else:
+                        layouts_data[screen_id] = str(layout)
+                
+                # Get blockly
+                blockly = context.get('blockly', {})
+                
                 result = {
-                    'architecture': context.get('architecture').dict() if context.get('architecture') else None,
-                    'layout': {
-                        screen_id: layout.dict() if hasattr(layout, 'dict') else layout
-                        for screen_id, layout in context.get('layouts', {}).items()
-                    },
-                    'blockly': context.get('blockly'),
+                    'architecture': architecture_data,
+                    'layout': layouts_data,
+                    'blockly': blockly,
                     'metadata': {
                         'total_time_ms': total_time,
                         'stage_times': context['stage_times'],
@@ -560,7 +749,8 @@ class Pipeline:
                         'generated_at': datetime.now(timezone.utc).isoformat() + 'Z',
                         'errors': context['errors'],
                         'warnings': context['warnings'],
-                        'substitutions': context['substitutions']
+                        'substitutions': context['substitutions'],
+                        'success': len(context['errors']) == 0
                     }
                 }
                 
@@ -576,19 +766,22 @@ class Pipeline:
                     extra={
                         "task_id": request.task_id,
                         "total_time_ms": total_time,
-                        "cache_hit": context.get('cache_hit', False)
+                        "cache_hit": context.get('cache_hit', False),
+                        "error_count": len(context['errors'])
                     }
                 )
                 
-                if isinstance(blockly, tuple):
-                    blockly = {"blocks": blockly[0], "metadata": blockly[1]}
+                return result
                 
             except Exception as e:
+                total_time = int((time.time() - start_time) * 1000)
+                
                 logger.error(
                     "pipeline.execution.failed",
                     extra={
                         "task_id": request.task_id,
-                        "error": str(e)
+                        "error": str(e),
+                        "total_time_ms": total_time
                     },
                     exc_info=e
                 )
@@ -599,6 +792,21 @@ class Pipeline:
                     socket_id=request.socket_id,
                     error=str(e)
                 )
+                
+                # Return partial result if available
+                if context.get('architecture') or context.get('layouts') or context.get('blockly'):
+                    partial_result = {
+                        'architecture': context.get('architecture'),
+                        'layout': context.get('layouts', {}),
+                        'blockly': context.get('blockly', {}),
+                        'metadata': {
+                            'total_time_ms': total_time,
+                            'errors': context['errors'],
+                            'success': False,
+                            'partial_result': True
+                        }
+                    }
+                    return partial_result
                 
                 raise
     
@@ -664,7 +872,7 @@ class Pipeline:
         complete_response = CompleteResponse(
             task_id=task_id,
             socket_id=socket_id,
-            status="success",
+            status="success" if result.get('metadata', {}).get('success', True) else "partial",
             result=result,
             metadata=result.get('metadata', {})
         )
@@ -716,9 +924,16 @@ if __name__ == "__main__":
             print(f"\nResult Summary:")
             print(f"  Total Time: {result['metadata']['total_time_ms']}ms")
             print(f"  Cache Hit: {result['metadata']['cache_hit']}")
-            print(f"  Architecture: {result['architecture']['app_type'] if result['architecture'] else 'None'}")
+            print(f"  Architecture: {result['architecture']['app_type'] if result['architecture'] and isinstance(result['architecture'], dict) else 'None'}")
             print(f"  Layouts: {len(result['layout'])} screens")
-            print(f"  Blockly Blocks: {len(result['blockly'].get('blocks', {}).get('blocks', []))}")
+            print(f"  Blockly Blocks: {len(result['blockly'].get('blocks', {}).get('blocks', [])) if isinstance(result.get('blockly'), dict) else 0}")
+            print(f"  Success: {result['metadata'].get('success', False)}")
+            print(f"  Errors: {len(result['metadata']['errors'])}")
+            
+            if result['metadata']['errors']:
+                print(f"\nErrors:")
+                for error in result['metadata']['errors']:
+                    print(f"  Stage: {error['stage']}, Error: {error['error'][:100]}")
             
             print(f"\nStage Times:")
             for stage, duration in result['metadata']['stage_times'].items():

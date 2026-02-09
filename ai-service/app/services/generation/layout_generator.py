@@ -7,6 +7,7 @@ import asyncio
 import re
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timezone
+from difflib import get_close_matches
 
 from app.config import settings
 from app.models.schemas.architecture import ArchitectureDesign, ScreenDefinition
@@ -22,9 +23,79 @@ from app.utils.logging import get_logger, log_context, trace_async
 logger = get_logger(__name__)
 
 
+# ✅ FIX #3: Component type aliases for normalization
+COMPONENT_TYPE_ALIASES = {
+    # Common LLM variations → Standard types
+    'text': 'Text',
+    'label': 'Text',
+    'textview': 'Text',
+    'textlabel': 'Text',
+    'textfield': 'Text',
+    
+    'button': 'Button',
+    'btn': 'Button',
+    'submitbutton': 'Button',
+    'actionbutton': 'Button',
+    
+    'input': 'InputText',
+    'textinput': 'InputText',
+    'inputtext': 'InputText',
+    'edittext': 'InputText',
+    'textentry': 'InputText',
+    
+    'textarea': 'TextArea',
+    'textareafield': 'TextArea',
+    'multilinetext': 'TextArea',
+    
+    'checkbox': 'Checkbox',
+    'check': 'Checkbox',
+    'checkbutton': 'Checkbox',
+    
+    'switch': 'Switch',
+    'toggle': 'Switch',
+    'toggleswitch': 'Switch',
+    
+    'slider': 'Slider',
+    'seekbar': 'Slider',
+    'range': 'Slider',
+    
+    'progressbar': 'ProgressBar',
+    'progress': 'ProgressBar',
+    'loadingbar': 'ProgressBar',
+    
+    'spinner': 'Spinner',
+    'loading': 'Spinner',
+    'loader': 'Spinner',
+    
+    'datepicker': 'DatePicker',
+    'date': 'DatePicker',
+    'datefield': 'DatePicker',
+    
+    'timepicker': 'TimePicker',
+    'time': 'TimePicker',
+    'timefield': 'TimePicker',
+    
+    'colorpicker': 'ColorPicker',
+    'color': 'ColorPicker',
+    'colorfield': 'ColorPicker',
+    
+    'joystick': 'Joystick',
+    'gamepad': 'Joystick',
+    
+    'map': 'Map',
+    'mapview': 'Map',
+    'googlemap': 'Map',
+    
+    'chart': 'Chart',
+    'graph': 'Chart',
+    'plot': 'Chart',
+}
+
+
 class LayoutGenerationError(Exception):
     """Base exception for layout generation errors"""
     pass
+
 
 class CollisionError(Exception):
     """Raised when UI elements collide during layout generation."""
@@ -44,6 +115,7 @@ class LayoutGenerator:
     Features:
     - Llama3 as primary LLM
     - Automatic heuristic template fallback
+    - ✅ Component type normalization
     - Collision detection and resolution
     - Touch target validation
     """
@@ -66,6 +138,9 @@ class LayoutGenerator:
         self.canvas_height = settings.canvas_height
         self.safe_area_top = settings.canvas_safe_area_top
         self.safe_area_bottom = settings.canvas_safe_area_bottom
+        
+        # ✅ Available components from settings
+        self.available_components = settings.available_components
         
         # Component sizing defaults (width, height)
         self.component_defaults = {
@@ -97,7 +172,8 @@ class LayoutGenerator:
             'failed': 0,
             'collisions_resolved': 0,
             'heuristic_fallbacks': 0,
-            'llama3_successes': 0
+            'llama3_successes': 0,
+            'components_normalized': 0
         }
         
         logger.info(
@@ -105,9 +181,86 @@ class LayoutGenerator:
             extra={
                 "llm_provider": "llama3",
                 "canvas": f"{self.canvas_width}x{self.canvas_height}",
-                "heuristic_fallback_enabled": True
+                "heuristic_fallback_enabled": True,
+                "component_normalization_enabled": True
             }
         )
+    
+    def _normalize_component_type(self, component_type: str) -> str:
+        """
+        ✅ FIX #3: Normalize component type to match available types
+        
+        Handles:
+        - Direct matches (Button → Button)
+        - Alias lookup (button → Button, text → Text)
+        - Case-insensitive matching (BUTTON → Button)
+        - Fuzzy matching for typos (Buton → Button)
+        - Default fallback (Unknown → Text)
+        """
+        
+        if not component_type:
+            logger.warning("layout.component.empty_type")
+            return "Text"
+        
+        original = component_type
+        normalized = component_type.strip()
+        
+        # Strategy 1: Direct match (case-sensitive)
+        if normalized in self.available_components:
+            return normalized
+        
+        # Strategy 2: Alias lookup (lowercase)
+        lowercase = normalized.lower()
+        if lowercase in COMPONENT_TYPE_ALIASES:
+            result = COMPONENT_TYPE_ALIASES[lowercase]
+            logger.debug(
+                "layout.component.alias_match",
+                extra={"original": original, "normalized": result}
+            )
+            self.stats['components_normalized'] += 1
+            return result
+        
+        # Strategy 3: Case-insensitive match
+        for available in self.available_components:
+            if available.lower() == lowercase:
+                logger.debug(
+                    "layout.component.case_match",
+                    extra={"original": original, "matched": available}
+                )
+                self.stats['components_normalized'] += 1
+                return available
+        
+        # Strategy 4: Fuzzy matching (for typos)
+        matches = get_close_matches(
+            normalized,
+            self.available_components,
+            n=1,
+            cutoff=0.6
+        )
+        
+        if matches:
+            result = matches[0]
+            logger.warning(
+                "layout.component.fuzzy_match",
+                extra={
+                    "original": original,
+                    "matched": result,
+                    "confidence": "medium"
+                }
+            )
+            self.stats['components_normalized'] += 1
+            return result
+        
+        # Strategy 5: Default fallback
+        logger.warning(
+            "layout.component.unknown_type",
+            extra={
+                "original": original,
+                "defaulting_to": "Text"
+            }
+        )
+        self.stats['components_normalized'] += 1
+        return "Text"
     
     @trace_async("layout.generation")
     async def generate(
@@ -160,7 +313,7 @@ class LayoutGenerator:
                     architecture=architecture
                 )
                 
-                # Convert to enhanced components
+                # ✅ Convert to enhanced components with normalization
                 components = await self._convert_to_enhanced_components(
                     layout_data['components'],
                     screen_id
@@ -263,6 +416,7 @@ class LayoutGenerator:
             # Update metadata
             metadata.update({
                 'used_heuristic': used_heuristic,
+                'components_normalized': self.stats['components_normalized'],
                 'generated_at': datetime.now(timezone.utc).isoformat() + "Z"
             })
             
@@ -273,7 +427,8 @@ class LayoutGenerator:
                 extra={
                     "screen": screen.name,
                     "components": len(components),
-                    "used_heuristic": used_heuristic
+                    "used_heuristic": used_heuristic,
+                    "components_normalized": self.stats['components_normalized']
                 }
             )
             
@@ -307,7 +462,7 @@ class LayoutGenerator:
                 
                 # Format prompt
                 system_prompt, user_prompt = prompts.LAYOUT_GENERATE.format(
-                    components=", ".join(settings.available_components),
+                    components=", ".join(self.available_components),
                     prompt=f"Layout for {screen.name}",
                     screen_architecture=json.dumps({
                         'id': screen.id,
@@ -397,7 +552,7 @@ class LayoutGenerator:
         # Step 1: Extract JSON from markdown
         cleaned_text = self._extract_json_from_markdown(response_text)
 
-        # adress the llama3 double curly brace issue
+        # Address the llama3 double curly brace issue
         cleaned_text = self._fix_double_curly_braces(cleaned_text)
         
         # Step 2: Normalize JSON format
@@ -530,17 +685,36 @@ class LayoutGenerator:
         components_data: List[Dict[str, Any]],
         screen_id: str
     ) -> List[EnhancedComponentDefinition]:
-        """Convert LLM's component data to enhanced definitions with better property handling"""
+        """
+        ✅ FIX #3: Convert LLM's component data to enhanced definitions with type normalization
+        """
         
         enhanced_components = []
         
         for idx, comp_data in enumerate(components_data):
             try:
                 comp_id = comp_data.get('id', f"comp_{screen_id}_{idx}")
-                comp_type = comp_data.get('type', 'Unknown')
+                raw_comp_type = comp_data.get('type', 'Text')
                 
-                if comp_type not in settings.available_components:
-                    logger.warning(f"Unsupported component type from LLM: {comp_type}, skipping")
+                # ✅ Normalize component type
+                comp_type = self._normalize_component_type(raw_comp_type)
+                
+                # Log if normalization changed the type
+                if raw_comp_type != comp_type:
+                    logger.info(
+                        "layout.component.normalized",
+                        extra={
+                            "original_type": raw_comp_type,
+                            "normalized_type": comp_type,
+                            "component_id": comp_id
+                        }
+                    )
+                
+                # Skip if still not in available components (shouldn't happen after normalization)
+                if comp_type not in self.available_components:
+                    logger.warning(
+                        f"Component type still unsupported after normalization: {comp_type}, skipping"
+                    )
                     continue
                 
                 # Initialize properties dict
@@ -636,10 +810,16 @@ class LayoutGenerator:
                 )
                 
                 enhanced_components.append(enhanced)
-                logger.debug(f"Converted component: {comp_type} at position {style_value['left']}, {style_value['top']}")
+                logger.debug(
+                    f"Converted component: {comp_type} (from {raw_comp_type}) "
+                    f"at position {style_value['left']}, {style_value['top']}"
+                )
                 
             except Exception as e:
-                logger.warning(f"Failed to convert component {idx} (type: {comp_data.get('type', 'unknown')}): {e}")
+                logger.warning(
+                    f"Failed to convert component {idx} "
+                    f"(type: {comp_data.get('type', 'unknown')}): {e}"
+                )
                 continue
         
         if not enhanced_components:
@@ -661,9 +841,14 @@ class LayoutGenerator:
         components = []
         current_y = self.safe_area_top + 20
         
-        for idx, comp_type in enumerate(screen.components):
-            if comp_type not in settings.available_components:
-                logger.warning(f"Unsupported component type in heuristic: {comp_type}")
+        for idx, raw_comp_type in enumerate(screen.components):
+            # ✅ Normalize component type in heuristic too
+            comp_type = self._normalize_component_type(raw_comp_type)
+            
+            if comp_type not in self.available_components:
+                logger.warning(
+                    f"Unsupported component type in heuristic after normalization: {comp_type}"
+                )
                 continue
             
             width, height = self.component_defaults.get(comp_type, (280, 44))
@@ -695,7 +880,6 @@ class LayoutGenerator:
                 properties['placeholder'] = PropertyValue(type="literal", value="Enter text")
                 properties['value'] = PropertyValue(type="literal", value="")
             elif comp_type == 'Checkbox':
-                # ✅ FIXED: Add required 'checked' property
                 properties['checked'] = PropertyValue(type="literal", value=False)
                 properties['label'] = PropertyValue(type="literal", value="Check me")
             elif comp_type == 'Switch':
@@ -738,12 +922,15 @@ class LayoutGenerator:
             except Exception as e:
                 logger.error(f"Failed to create {comp_type} in heuristic: {e}")
                 # Skip this component but continue with others
+                continue
+            
+            # Move to next position
+            current_y += height + 16
         
-        # Move to next position
-        current_y += height + 16
-    
         if not components:
-            raise LayoutGenerationError(f"No components could be generated for screen: {screen.name}")
+            raise LayoutGenerationError(
+                f"No components could be generated for screen: {screen.name}"
+            )
         
         logger.info(
             "✅ layout.heuristic.generated",
@@ -874,7 +1061,8 @@ class LayoutGenerator:
             'success_rate': (self.stats['successful'] / total * 100) if total > 0 else 0,
             'heuristic_fallback_rate': (self.stats['heuristic_fallbacks'] / total * 100) if total > 0 else 0,
             'llama3_success_rate': (self.stats['llama3_successes'] / total * 100) if total > 0 else 0,
-            'collisions_resolved': self.stats['collisions_resolved']
+            'collisions_resolved': self.stats['collisions_resolved'],
+            'components_normalized': self.stats['components_normalized']
         }
     
     async def test_json_parsing(self):

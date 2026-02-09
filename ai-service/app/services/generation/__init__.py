@@ -9,7 +9,7 @@ Phase 5: Blockly generation ✅
 from app.services.generation.architecture_generator import (
     architecture_generator,
     ArchitectureGenerator,
-    Ar3t24NpUrJMNunMMASmhAM953bFGeLXzN7,  # Changed from ArQuMHtpwbtsTXsRMArUQeWyGrRu7gwbZs2
+    ArchitectureGenerationStage,  # Changed from ArQuMHtpwbtsTXsRMArUQeWyGrRu7gwbZs2
     InvalidArchitectureError
 )
 
@@ -53,7 +53,7 @@ __all__ = [
     # Architecture generation
     'architecture_generator',
     'ArchitectureGenerator',
-    'Ar3t24NpUrJMNunMMASmhAM953bFGeLXzN7',  # Changed from ArQuMHtpwbtsTXsRMArUQeWyGrRu7gwbZs2
+    'ArchitectureGenerationStage',  # Changed from ArQuMHtpwbtsTXsRMArUQeWyGrRu7gwbZs2
     'InvalidArchitectureError',
     
     # Architecture validation

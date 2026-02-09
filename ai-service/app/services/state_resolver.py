@@ -21,7 +21,7 @@ Design Principles:
 - Deterministic behavior
 """
 
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional, Set, Union
 from datetime import datetime
 from loguru import logger
 
@@ -114,7 +114,7 @@ class ProjectStateResolver:
         self,
         current_state: ProjectState,
         intent: IntentType,
-        proposed_changes: Dict[str, Any],
+        proposed_changes: Union[Dict[str, Any], List[Dict[str, Any]]],
         actor: str,
         reason: str = "AI-generated update"
     ) -> ProjectState:
@@ -124,7 +124,7 @@ class ProjectStateResolver:
         Args:
             current_state: Current project state
             intent: Classified intent from user prompt
-            proposed_changes: Changes proposed by LLM (structured dict)
+            proposed_changes: Changes proposed by LLM (structured dict OR list of dicts)
             actor: Who is making this change (user_id)
             reason: Human-readable explanation
             
@@ -136,20 +136,23 @@ class ProjectStateResolver:
             ValidationError: If proposed changes are invalid
         """
         logger.info(
-            f"🔧 Resolving state mutation",
+            "🔧 Resolving state mutation",
             extra={
                 "intent": intent.value,
                 "actor": actor,
                 "current_version": current_state.metadata.version,
-                "proposed_sections": list(proposed_changes.keys()),
+                "proposed_type": type(proposed_changes).__name__,
             }
         )
+        
+        # Step 0: Normalize proposed_changes to dictionary
+        normalized_changes = self._normalize_proposed_changes(proposed_changes)
         
         # Step 1: Validate intent allows mutation
         self._validate_intent_allows_mutation(intent)
         
         # Step 2: Validate sections being modified
-        sections_to_modify = self._extract_sections(proposed_changes)
+        sections_to_modify = self._extract_sections(normalized_changes)
         self._validate_sections_allowed(intent, sections_to_modify)
         
         # Step 3: Check foundation mutation rules
@@ -159,7 +162,7 @@ class ProjectStateResolver:
         # Step 4: Apply changes with minimal diff
         updated_state = self._apply_changes(
             current_state=current_state,
-            proposed_changes=proposed_changes,
+            proposed_changes=normalized_changes,
             intent=intent,
             actor=actor,
             reason=reason,
@@ -172,15 +175,103 @@ class ProjectStateResolver:
         updated_state.increment_version(modified_by=actor)
         
         logger.info(
-            f"✅ State mutation completed",
+            "✅ State mutation completed",
             extra={
                 "intent": intent.value,
                 "new_version": updated_state.metadata.version,
                 "changes_logged": len(updated_state.change_log.changes),
+                "sections_modified": [s.value for s in sections_to_modify],
             }
         )
         
         return updated_state
+    
+    # ========================================================================
+    # NORMALIZATION METHODS
+    # ========================================================================
+    
+    def _normalize_proposed_changes(self, proposed_changes: Union[Dict[str, Any], List[Dict[str, Any]]]) -> Dict[str, Any]:
+        """
+        Normalize proposed changes to consistent dictionary format.
+        
+        Handles:
+        1. List of changes (merge into single dict)
+        2. Dictionary (return as-is)
+        3. Empty or None (return empty dict)
+        """
+        if proposed_changes is None:
+            return {}
+        
+        if isinstance(proposed_changes, dict):
+            return proposed_changes
+        
+        if isinstance(proposed_changes, list):
+            return self._merge_list_of_changes(proposed_changes)
+        
+        # If it's something else, try to convert or raise error
+        logger.warning(
+            "Unexpected proposed_changes type, attempting to convert",
+            extra={"type": type(proposed_changes).__name__}
+        )
+        
+        try:
+            # Try to convert to dict (e.g., from Pydantic model)
+            if hasattr(proposed_changes, 'model_dump'):
+                return proposed_changes.model_dump()
+            elif hasattr(proposed_changes, 'dict'):
+                return proposed_changes.dict()
+            else:
+                raise ValidationError(
+                    f"proposed_changes must be dict or list of dicts, got {type(proposed_changes).__name__}"
+                )
+        except Exception as e:
+            raise ValidationError(
+                f"Failed to normalize proposed_changes: {e}. "
+                f"Type: {type(proposed_changes).__name__}, Value: {proposed_changes}"
+            )
+    
+    def _merge_list_of_changes(self, changes_list: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Merge a list of change dictionaries into a single dictionary.
+        
+        Example:
+        Input: [{"foundations": {"app_name": "New"}}, {"layout": {"components": {...}}}]
+        Output: {"foundations": {"app_name": "New"}, "layout": {"components": {...}}}
+        """
+        merged = {}
+        
+        for change_item in changes_list:
+            if not isinstance(change_item, dict):
+                logger.warning(
+                    "Skipping non-dict item in changes list",
+                    extra={"type": type(change_item).__name__}
+                )
+                continue
+            
+            for section, changes in change_item.items():
+                if section not in merged:
+                    merged[section] = {}
+                
+                # Deep merge if both are dictionaries
+                if isinstance(changes, dict) and isinstance(merged[section], dict):
+                    merged[section] = self._deep_merge_dicts(merged[section], changes)
+                else:
+                    # Replace if not both dicts
+                    merged[section] = changes
+        
+        return merged
+    
+    def _deep_merge_dicts(self, dict1: Dict[str, Any], dict2: Dict[str, Any]) -> Dict[str, Any]:
+        """Recursively merge two dictionaries."""
+        result = dict1.copy()
+        
+        for key, value in dict2.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                result[key] = self._deep_merge_dicts(result[key], value)
+            else:
+                result[key] = value
+        
+        return result
     
     # ========================================================================
     # VALIDATION METHODS
@@ -269,6 +360,7 @@ class ProjectStateResolver:
                 sections.add(StateSection(key))
             except ValueError:
                 # Ignore unknown keys (could be metadata)
+                logger.debug(f"Ignoring unknown section key: {key}")
                 pass
         
         return sections
@@ -289,24 +381,50 @@ class ProjectStateResolver:
         # Create a deep copy to avoid mutating original
         updated_state = current_state.model_copy(deep=True)
         
+        # Track if any changes were actually applied
+        changes_applied = False
+        
         # Apply changes section by section
         for section_key, section_changes in proposed_changes.items():
+            if not isinstance(section_changes, dict):
+                logger.warning(
+                    f"Skipping section '{section_key}' because it is not a dict",
+                    extra={"type": type(section_changes).__name__}
+                )
+                continue
+            
             if section_key == "foundations":
                 self._apply_foundation_changes(
                     updated_state, section_changes, intent, actor, reason
                 )
+                changes_applied = True
             elif section_key == "architecture":
                 self._apply_architecture_changes(
                     updated_state, section_changes, intent, actor, reason
                 )
+                changes_applied = True
             elif section_key == "layout":
                 self._apply_layout_changes(
                     updated_state, section_changes, intent, actor, reason
                 )
+                changes_applied = True
             elif section_key == "blockly":
                 self._apply_blockly_changes(
                     updated_state, section_changes, intent, actor, reason
                 )
+                changes_applied = True
+            elif section_key == "metadata":
+                # Metadata changes are allowed but logged separately
+                self._apply_metadata_changes(
+                    updated_state, section_changes, intent, actor, reason
+                )
+                changes_applied = True
+            else:
+                logger.warning(f"Ignoring unknown section: {section_key}")
+        
+        # If no changes were applied, log it
+        if not changes_applied:
+            logger.info("No valid changes to apply after normalization")
         
         return updated_state
     
@@ -355,6 +473,9 @@ class ProjectStateResolver:
         # Handle screens
         if "screens" in changes:
             screens_changes = changes["screens"]
+            if not isinstance(screens_changes, dict):
+                logger.warning("screens changes is not a dict", extra={"type": type(screens_changes).__name__})
+                return
             
             for screen_id, screen_data in screens_changes.items():
                 if screen_id in state.architecture.screens:
@@ -370,29 +491,35 @@ class ProjectStateResolver:
         
         # Handle navigation
         if "navigation" in changes:
-            # For navigation, we replace the entire list
-            # (diff-ing navigation paths is complex)
-            old_nav = state.architecture.navigation
-            new_nav = [Navigation(**nav) for nav in changes["navigation"]]
-            
-            change = StateChange(
-                actor=actor,
-                intent=intent,
-                action=ChangeAction.REPLACE,
-                section=StateSection.ARCHITECTURE,
-                path="architecture.navigation",
-                old_value=len(old_nav),
-                new_value=len(new_nav),
-                reason=reason,
-            )
-            state.change_log.append(change)
-            
-            state.architecture.navigation = new_nav
-            
-            logger.debug(f"Replaced navigation: {len(old_nav)} → {len(new_nav)} paths")
+            navigation_changes = changes["navigation"]
+            if isinstance(navigation_changes, list):
+                # For navigation, we replace the entire list
+                # (diff-ing navigation paths is complex)
+                old_nav = state.architecture.navigation
+                try:
+                    new_nav = [Navigation(**nav) for nav in navigation_changes]
+                except Exception as e:
+                    logger.error(f"Failed to create navigation objects: {e}")
+                    raise ValidationError(f"Invalid navigation data: {e}")
+                
+                change = StateChange(
+                    actor=actor,
+                    intent=intent,
+                    action=ChangeAction.REPLACE,
+                    section=StateSection.ARCHITECTURE,
+                    path="architecture.navigation",
+                    old_value=len(old_nav),
+                    new_value=len(new_nav),
+                    reason=reason,
+                )
+                state.change_log.append(change)
+                
+                state.architecture.navigation = new_nav
+                
+                logger.debug(f"Replaced navigation: {len(old_nav)} → {len(new_nav)} paths")
         
         # Handle other architecture fields
-        for field_name in ["state_management", "data_persistence"]:
+        for field_name in ["state_management", "data_persistence", "app_type", "screens_order"]:
             if field_name in changes:
                 old_value = getattr(state.architecture, field_name)
                 new_value = changes[field_name]
@@ -451,22 +578,26 @@ class ProjectStateResolver:
         reason: str,
     ) -> None:
         """Create new screen"""
-        screen = Screen(screen_id=screen_id, **screen_data)
-        state.architecture.screens[screen_id] = screen
-        
-        change = StateChange(
-            actor=actor,
-            intent=intent,
-            action=ChangeAction.CREATE,
-            section=StateSection.ARCHITECTURE,
-            path=f"architecture.screens.{screen_id}",
-            old_value=None,
-            new_value=screen.model_dump(),
-            reason=reason,
-        )
-        state.change_log.append(change)
-        
-        logger.debug(f"Created new screen: {screen_id}")
+        try:
+            screen = Screen(screen_id=screen_id, **screen_data)
+            state.architecture.screens[screen_id] = screen
+            
+            change = StateChange(
+                actor=actor,
+                intent=intent,
+                action=ChangeAction.CREATE,
+                section=StateSection.ARCHITECTURE,
+                path=f"architecture.screens.{screen_id}",
+                old_value=None,
+                new_value=screen.model_dump(),
+                reason=reason,
+            )
+            state.change_log.append(change)
+            
+            logger.debug(f"Created new screen: {screen_id}")
+        except Exception as e:
+            logger.error(f"Failed to create screen {screen_id}: {e}")
+            raise ValidationError(f"Invalid screen data for {screen_id}: {e}")
     
     def _apply_layout_changes(
         self,
@@ -481,6 +612,9 @@ class ProjectStateResolver:
         # Handle components
         if "components" in changes:
             components_changes = changes["components"]
+            if not isinstance(components_changes, dict):
+                logger.warning("components changes is not a dict", extra={"type": type(components_changes).__name__})
+                return
             
             for component_id, component_data in components_changes.items():
                 if component_id in state.layout.components:
@@ -495,7 +629,7 @@ class ProjectStateResolver:
                     )
         
         # Handle layout system settings
-        for field_name in ["layout_system", "responsive"]:
+        for field_name in ["layout_system", "responsive", "canvas"]:
             if field_name in changes:
                 old_value = getattr(state.layout, field_name)
                 new_value = changes[field_name]
@@ -531,36 +665,44 @@ class ProjectStateResolver:
                 # Handle nested objects
                 if field_name == "position":
                     old_pos = component.position
-                    new_pos = Position(**new_value)
-                    if old_pos.x != new_pos.x or old_pos.y != new_pos.y:
-                        change = StateChange(
-                            actor=actor,
-                            intent=intent,
-                            action=ChangeAction.UPDATE,
-                            section=StateSection.LAYOUT,
-                            path=f"layout.components.{component_id}.position",
-                            old_value=old_pos.model_dump(),
-                            new_value=new_pos.model_dump(),
-                            reason=reason,
-                        )
-                        state.change_log.append(change)
-                        component.position = new_pos
+                    try:
+                        new_pos = Position(**new_value)
+                        if old_pos.x != new_pos.x or old_pos.y != new_pos.y:
+                            change = StateChange(
+                                actor=actor,
+                                intent=intent,
+                                action=ChangeAction.UPDATE,
+                                section=StateSection.LAYOUT,
+                                path=f"layout.components.{component_id}.position",
+                                old_value=old_pos.model_dump(),
+                                new_value=new_pos.model_dump(),
+                                reason=reason,
+                            )
+                            state.change_log.append(change)
+                            component.position = new_pos
+                    except Exception as e:
+                        logger.error(f"Invalid position data for {component_id}: {e}")
+                        raise ValidationError(f"Invalid position data: {e}")
                 elif field_name == "size":
                     old_size = component.size
-                    new_size = Size(**new_value)
-                    if old_size.width != new_size.width or old_size.height != new_size.height:
-                        change = StateChange(
-                            actor=actor,
-                            intent=intent,
-                            action=ChangeAction.UPDATE,
-                            section=StateSection.LAYOUT,
-                            path=f"layout.components.{component_id}.size",
-                            old_value=old_size.model_dump(),
-                            new_value=new_size.model_dump(),
-                            reason=reason,
-                        )
-                        state.change_log.append(change)
-                        component.size = new_size
+                    try:
+                        new_size = Size(**new_value)
+                        if old_size.width != new_size.width or old_size.height != new_size.height:
+                            change = StateChange(
+                                actor=actor,
+                                intent=intent,
+                                action=ChangeAction.UPDATE,
+                                section=StateSection.LAYOUT,
+                                path=f"layout.components.{component_id}.size",
+                                old_value=old_size.model_dump(),
+                                new_value=new_size.model_dump(),
+                                reason=reason,
+                            )
+                            state.change_log.append(change)
+                            component.size = new_size
+                    except Exception as e:
+                        logger.error(f"Invalid size data for {component_id}: {e}")
+                        raise ValidationError(f"Invalid size data: {e}")
             else:
                 # Handle simple fields
                 if hasattr(component, field_name):
@@ -590,28 +732,32 @@ class ProjectStateResolver:
         reason: str,
     ) -> None:
         """Create new component"""
-        # Handle nested Position and Size
-        if "position" in component_data:
-            component_data["position"] = Position(**component_data["position"])
-        if "size" in component_data:
-            component_data["size"] = Size(**component_data["size"])
-        
-        component = Component(component_id=component_id, **component_data)
-        state.layout.components[component_id] = component
-        
-        change = StateChange(
-            actor=actor,
-            intent=intent,
-            action=ChangeAction.CREATE,
-            section=StateSection.LAYOUT,
-            path=f"layout.components.{component_id}",
-            old_value=None,
-            new_value=component.model_dump(),
-            reason=reason,
-        )
-        state.change_log.append(change)
-        
-        logger.debug(f"Created new component: {component_id}")
+        try:
+            # Handle nested Position and Size
+            if "position" in component_data:
+                component_data["position"] = Position(**component_data["position"])
+            if "size" in component_data:
+                component_data["size"] = Size(**component_data["size"])
+            
+            component = Component(component_id=component_id, **component_data)
+            state.layout.components[component_id] = component
+            
+            change = StateChange(
+                actor=actor,
+                intent=intent,
+                action=ChangeAction.CREATE,
+                section=StateSection.LAYOUT,
+                path=f"layout.components.{component_id}",
+                old_value=None,
+                new_value=component.model_dump(),
+                reason=reason,
+            )
+            state.change_log.append(change)
+            
+            logger.debug(f"Created new component: {component_id}")
+        except Exception as e:
+            logger.error(f"Failed to create component {component_id}: {e}")
+            raise ValidationError(f"Invalid component data for {component_id}: {e}")
     
     def _apply_blockly_changes(
         self,
@@ -626,6 +772,9 @@ class ProjectStateResolver:
         # Handle blocks
         if "blocks" in changes:
             blocks_changes = changes["blocks"]
+            if not isinstance(blocks_changes, dict):
+                logger.warning("blocks changes is not a dict", extra={"type": type(blocks_changes).__name__})
+                return
             
             for block_id, block_data in blocks_changes.items():
                 if block_id in state.blockly.blocks:
@@ -679,25 +828,46 @@ class ProjectStateResolver:
         reason: str,
     ) -> None:
         """Create new Blockly block"""
-        if "position" in block_data:
-            block_data["position"] = Position(**block_data["position"])
-        
-        block = BlocklyBlock(block_id=block_id, **block_data)
-        state.blockly.blocks[block_id] = block
-        
-        change = StateChange(
-            actor=actor,
-            intent=intent,
-            action=ChangeAction.CREATE,
-            section=StateSection.BLOCKLY,
-            path=f"blockly.blocks.{block_id}",
-            old_value=None,
-            new_value=block.model_dump(),
-            reason=reason,
-        )
-        state.change_log.append(change)
-        
-        logger.debug(f"Created new Blockly block: {block_id}")
+        try:
+            if "position" in block_data:
+                block_data["position"] = Position(**block_data["position"])
+            
+            block = BlocklyBlock(block_id=block_id, **block_data)
+            state.blockly.blocks[block_id] = block
+            
+            change = StateChange(
+                actor=actor,
+                intent=intent,
+                action=ChangeAction.CREATE,
+                section=StateSection.BLOCKLY,
+                path=f"blockly.blocks.{block_id}",
+                old_value=None,
+                new_value=block.model_dump(),
+                reason=reason,
+            )
+            state.change_log.append(change)
+            
+            logger.debug(f"Created new Blockly block: {block_id}")
+        except Exception as e:
+            logger.error(f"Failed to create block {block_id}: {e}")
+            raise ValidationError(f"Invalid block data for {block_id}: {e}")
+    
+    def _apply_metadata_changes(
+        self,
+        state: ProjectState,
+        changes: Dict[str, Any],
+        intent: IntentType,
+        actor: str,
+        reason: str,
+    ) -> None:
+        """Apply changes to metadata (no validation, just update)"""
+        for field_name, new_value in changes.items():
+            if hasattr(state.metadata, field_name):
+                old_value = getattr(state.metadata, field_name)
+                
+                if old_value != new_value:
+                    logger.debug(f"Updating metadata.{field_name}: {old_value} → {new_value}")
+                    setattr(state.metadata, field_name, new_value)
 
 
 # ============================================================================
@@ -707,7 +877,7 @@ class ProjectStateResolver:
 def resolve_and_update_state(
     state: ProjectState,
     intent: IntentType,
-    proposed_changes: Dict[str, Any],
+    proposed_changes: Union[Dict[str, Any], List[Dict[str, Any]]],
     actor: str = "system",
     reason: str = "AI-generated update"
 ) -> ProjectState:
@@ -727,82 +897,81 @@ def resolve_and_update_state(
 
 
 # ============================================================================
-# EXAMPLE USAGE
+# SAFE RESOLVER WRAPPER (for pipeline integration)
 # ============================================================================
 
-if __name__ == "__main__":
-    from app.models.project_state import ProjectState
+def safe_resolve_and_update_state(
+    state: Optional[ProjectState],
+    intent: IntentType,
+    proposed_changes: Any,
+    actor: str = "system",
+    reason: str = "AI-generated update"
+) -> Dict[str, Any]:
+    """
+    Safe wrapper that never crashes. Used in pipeline integration.
     
-    # Create initial state
-    state = ProjectState.create_new(
-        app_name="Counter App",
-        app_description="Simple counter",
-        created_by="user_123",
-    )
-    
-    print(f"Initial state: {state}")
-    print(f"Version: {state.metadata.version}")
-    
-    # Example 1: Add a screen
-    print("\n--- Example 1: Add Screen ---")
-    changes = {
-        "architecture": {
-            "screens": {
-                "main_screen": {
-                    "screen_name": "Main",
-                    "screen_type": "main",
-                    "is_entry_point": True,
-                    "description": "Main counter screen",
-                }
-            }
-        }
-    }
-    
-    state = resolve_and_update_state(
-        state=state,
-        intent=IntentType.UPDATE_FEATURE,
-        proposed_changes=changes,
-        actor="user_123",
-        reason="Initial screen setup",
-    )
-    
-    print(f"After adding screen: version={state.metadata.version}")
-    print(f"Screens: {list(state.architecture.screens.keys())}")
-    
-    # Example 2: Try to modify foundation (should fail without proper intent)
-    print("\n--- Example 2: Try Illegal Foundation Mutation ---")
+    Returns a dictionary with success/error information.
+    """
     try:
-        illegal_changes = {
-            "foundations": {
-                "app_name": "New Name"
+        if state is None:
+            logger.warning("Cannot resolve state: state is None")
+            return {
+                "success": False,
+                "error": "State is None",
+                "updated_state": None,
+                "state_metadata": None,
             }
+        
+        # Normalize proposed_changes before validation
+        resolver = ProjectStateResolver()
+        normalized_changes = resolver._normalize_proposed_changes(proposed_changes)
+        
+        # Check if there are any valid changes
+        if not normalized_changes:
+            logger.info("No valid changes to apply")
+            return {
+                "success": True,
+                "error": None,
+                "updated_state": state,
+                "state_metadata": {
+                    "project_id": state.metadata.project_id,
+                    "state_version": state.metadata.version,
+                    "total_changes": len(state.change_log.changes),
+                },
+                "changes_applied": False,
+            }
+        
+        # Apply changes
+        updated_state = resolver.resolve_and_update(
+            current_state=state,
+            intent=intent,
+            proposed_changes=normalized_changes,
+            actor=actor,
+            reason=reason,
+        )
+        
+        return {
+            "success": True,
+            "error": None,
+            "updated_state": updated_state,
+            "state_metadata": {
+                "project_id": updated_state.metadata.project_id,
+                "state_version": updated_state.metadata.version,
+                "total_changes": len(updated_state.change_log.changes),
+            },
+            "changes_applied": True,
         }
         
-        state = resolve_and_update_state(
-            state=state,
-            intent=IntentType.UPDATE_FEATURE,  # Wrong intent!
-            proposed_changes=illegal_changes,
-            actor="user_123",
-        )
-    except FoundationMutationError as e:
-        print(f"Correctly blocked: {e}")
-    
-    # Example 3: Modify foundation with correct intent
-    print("\n--- Example 3: Legal Foundation Mutation ---")
-    foundation_changes = {
-        "foundations": {
-            "primary_color": "#FF0000"
+    except Exception as e:
+        logger.error(f"State resolution failed: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e),
+            "updated_state": state,  # Return original state
+            "state_metadata": {
+                "project_id": state.metadata.project_id if state else None,
+                "state_version": state.metadata.version if state else None,
+                "total_changes": len(state.change_log.changes) if state else 0,
+            } if state else None,
+            "changes_applied": False,
         }
-    }
-    
-    state = resolve_and_update_state(
-        state=state,
-        intent=IntentType.MODIFY_FOUNDATION,
-        proposed_changes=foundation_changes,
-        actor="user_123",
-        reason="User changed theme color",
-    )
-    
-    print(f"After foundation change: version={state.metadata.version}")
-    print(f"Primary color: {state.foundations.primary_color}")
-    print(f"Change log entries: {len(state.change_log.changes)}")

@@ -91,23 +91,32 @@ class PromptManager:
         
         template = self.templates[version][prompt_type]
         
-        if variables:
-            try:
+        #if variables:
+            #try:
                 # Use safe formatting to avoid KeyError
-                import string
-                formatter = string.Formatter()
-                field_names = [fname for _, fname, _, _ in formatter.parse(template) if fname]
+                #import string
+                #formatter = string.Formatter()
+                #field_names = [fname for _, fname, _, _ in formatter.parse(template) if fname]
                 
                 # Check all required variables are present
-                for field in field_names:
-                    if field not in variables:
-                        logger.warning(f"Missing variable '{field}' in prompt variables")
+                #for field in field_names:
+               #     if field not in variables:
+              #          logger.warning(f"Missing variable '{field}' in prompt variables")
                 
-                template = template.format(**{k: v for k, v in variables.items() if k in field_names})
-            except KeyError as e:
-                logger.error(f"Missing variable in prompt template: {e}")
-                raise ValueError(f"Missing required variable: {e}")
-        
+             #   cleaned_variables = {}
+            #    for k, v in variables.items():
+                    # Remove extra whitespace and quotes from variable names
+           #         clean_key = k.strip().strip('"\'')
+          #          if clean_key in field_names:
+         #               cleaned_variables[clean_key] = v
+
+        #        template = template.format(**cleaned_variables)
+        #    except KeyError as e:
+        #        logger.error(f"Missing variable in prompt template: {e}")
+        #        raise ValueError(f"Missing required variable: {e}")
+        #
+        #return template
+        logger.debug(f"Returning template for {prompt_type} without formatting")
         return template
     
     def build_messages(
@@ -216,46 +225,46 @@ STRICT REQUIREMENTS:
 3. No markdown formatting (no ```json, no ```)
 4. Follow this exact schema:
 
-{
+{{
   "app_type": "single-page" | "multi-page",
   "screens": [
-    {
+    {{
       "id": "string",
       "name": "string",
       "purpose": "string",
       "components": ["string"],
       "navigation": ["string"]
-    }
+    }}
   ],
-  "navigation": {
+  "navigation": {{
     "type": "string",
     "routes": [
-      {
+      {{
         "from": "string",
         "to": "string",
         "label": "string"
-      }
+      }}
     ]
-  },
+  }},
   "state_management": [
-    {
+    {{
       "name": "string",
       "type": "string",
       "scope": "string",
       "initial_value": "any"
-    }
+    }}
   ],
-  "data_flow": {
+  "data_flow": {{
     "user_interactions": ["string"],
     "api_calls": ["string"],
     "local_storage": ["string"]
-  },
-  "theme": {
+  }},
+  "theme": {{
     "primary_color": "#hex",
     "secondary_color": "#hex",
     "background_color": "#hex"
-  }
-}
+  }}
+}}
 
 IMPORTANT: Return ONLY the JSON object, nothing else."""
     
@@ -270,25 +279,25 @@ STRICT REQUIREMENTS:
 3. No markdown formatting (no ```json, no ```)
 4. Follow this exact schema:
 
-{
+{{
   "screenId": "string",
   "layoutType": "flex" | "absolute",
   "backgroundColor": "#hex",
   "components": [
-    {
+    {{
       "id": "string",
       "type": "Text" | "Button" | "InputText" | "Image" | "List" | "Checkbox" | "Slider",
-      "properties": {
+      "properties": {{
         "value": "string",
         "fontSize": number,
         "fontWeight": "string",
         "color": "#hex"
-      },
-      "position": {
+      }},
+      "position": {{
         "x": number,
         "y": number
-      },
-      "constraints": {
+      }},
+      "constraints": {{
         "width": number | "string",
         "height": number,
         "marginTop": number,
@@ -296,10 +305,10 @@ STRICT REQUIREMENTS:
         "marginLeft": number | "string",
         "marginRight": number | "string",
         "alignment": "string"
-      }
-    }
+      }}
+    }}
   ]
-}
+}}
 
 IMPORTANT: Return ONLY the JSON object, nothing else."""
     
@@ -314,42 +323,42 @@ STRICT REQUIREMENTS:
 3. No markdown formatting (no ```json, no ```)
 4. Follow this exact schema:
 
-{
-  "blocks": {
+{{
+  "blocks": {{
     "languageVersion": 0,
     "blocks": [
-      {
+      {{
         "type": "string",
         "id": "string",
-        "fields": {
+        "fields": {{
           "COMPONENT": "string",
           "EVENT": "string"
-        },
-        "inputs": {
-          "DO": {
-            "block": {
+        }},
+        "inputs": {{
+          "DO": {{
+            "block": {{
               "type": "string",
               "id": "string",
-              "fields": {
+              "fields": {{
                 "STATE_VAR": "string",
                 "OPERATION": "string",
                 "VALUE": "string"
-              }
-            }
-          }
-        }
-      }
+              }}
+            }}
+          }}
+        }}
+      }}
     ]
-  },
+  }},
   "variables": [
-    {
+    {{
       "name": "string",
       "id": "string",
       "type": "string"
-    }
+    }}
   ],
   "custom_blocks": []
-}
+}}
 
 IMPORTANT: Return ONLY the JSON object, nothing else."""
     
@@ -364,7 +373,7 @@ STRICT REQUIREMENTS:
 3. No markdown formatting (no ```json, no ```)
 4. Follow this exact schema:
 
-{
+{{
   "intent": "counter" | "todo" | "calculator" | "notes" | "weather" | "generic",
   "confidence": number,
   "features": ["string"],
@@ -372,7 +381,7 @@ STRICT REQUIREMENTS:
   "screens_required": number,
   "requires_api": boolean,
   "requires_storage": boolean
-}
+}}
 
 IMPORTANT: Return ONLY the JSON object, nothing else."""
     
@@ -387,16 +396,16 @@ STRICT REQUIREMENTS:
 3. No markdown formatting (no ```json, no ```)
 4. Follow this exact schema:
 
-{
+{{
   "language": "string",
   "framework": "string",
   "files": [
-    {
+    {{
       "filename": "string",
       "content": "string"
-    }
+    }}
   ]
-}
+}}
 
 IMPORTANT: Return ONLY the JSON object, nothing else."""
     
@@ -411,13 +420,13 @@ STRICT REQUIREMENTS:
 3. No markdown formatting (no ```json, no ```)
 4. Follow this exact schema:
 
-{
+{{
   "app_name": "string",
   "description": "string",
   "key_features": ["string"],
   "target_audience": "string",
   "complexity": "string"
-}
+}}
 
 IMPORTANT: Return ONLY the JSON object, nothing else."""
     
@@ -450,62 +459,62 @@ IMPORTANT: Return ONLY the JSON object, nothing else."""
         """V3 architecture prompt that handles ANY app type"""
         return """IMPORTANT: You MUST respond with valid JSON only. Do NOT include any markdown, code blocks, explanations, or additional text.
 
-    You are an expert application architect capable of designing ANY type of mobile application.
+You are an expert application architect capable of designing ANY type of mobile application.
 
-    STRICT REQUIREMENTS:
-    1. Response must be valid JSON parsable by json.loads()
-    2. No additional text before or after the JSON
-    3. No markdown formatting (no ```json, no ```)
-    4. Analyze the app type and domain to provide appropriate architecture
-    5. Follow this schema:
+STRICT REQUIREMENTS:
+1. Response must be valid JSON parsable by json.loads()
+2. No additional text before or after the JSON
+3. No markdown formatting (no ```json, no ```)
+4. Analyze the app type and domain to provide appropriate architecture
+5. Follow this schema:
 
-    {
-    "app_type": "string (descriptive name of the app)",
-    "domain": "productivity|entertainment|utility|business|education|health_fitness|finance|development|iot_hardware|creative_media|data_science|custom",
-    "complexity": "simple_ui|data_driven|integrated|enterprise|hardware|ai_ml",
-    "architecture": {
-        "pattern": "string (recommended architecture pattern)",
-        "screens": [
-        {
-            "id": "string",
-            "name": "string",
-            "purpose": "string",
-            "key_components": ["string"],
-            "special_requirements": ["string"]
-        }
-        ],
-        "state_management": {
-        "approach": "string",
-        "key_states": [
-            {
-            "name": "string",
-            "type": "string",
-            "scope": "global|screen|component"
-            }
-        ]
-        },
-        "data_flow": {
-        "sources": ["string"],
-        "transformations": ["string"],
-        "destinations": ["string"]
-        },
-        "special_considerations": ["string"]
-    },
-    "technical_requirements": {
-        "apis_needed": ["string"],
-        "permissions_required": ["string"],
-        "platform_considerations": ["string"],
-        "risk_factors": ["string"]
-    },
-    "recommended_components": ["string"],
-    "estimated_effort": "small|medium|large|very_large"
-    }
+{{
+  "app_type": "string (descriptive name of the app)",
+  "domain": "productivity|entertainment|utility|business|education|health_fitness|finance|development|iot_hardware|creative_media|data_science|custom",
+  "complexity": "simple_ui|data_driven|integrated|enterprise|hardware|ai_ml",
+  "architecture": {{
+    "pattern": "string (recommended architecture pattern)",
+    "screens": [
+      {{
+        "id": "string",
+        "name": "string",
+        "purpose": "string",
+        "key_components": ["string"],
+        "special_requirements": ["string"]
+      }}
+    ],
+    "state_management": {{
+      "approach": "string",
+      "key_states": [
+        {{
+          "name": "string",
+          "type": "string",
+          "scope": "global|screen|component"
+        }}
+      ]
+    }},
+    "data_flow": {{
+      "sources": ["string"],
+      "transformations": ["string"],
+      "destinations": ["string"]
+    }},
+    "special_considerations": ["string"]
+  }},
+  "technical_requirements": {{
+    "apis_needed": ["string"],
+    "permissions_required": ["string"],
+    "platform_considerations": ["string"],
+    "risk_factors": ["string"]
+  }},
+  "recommended_components": ["string"],
+  "estimated_effort": "small|medium|large|very_large"
+}}
 
-    SPECIAL DOMAIN HANDLING:
-    - For hardware/IoT apps: Include real-time communication, device state management
-    - For AI/ML apps: Include data processing pipelines, model management
-    - For real-time apps: Include WebSockets, live updates, connection management
-    - For 3D/visualization apps: Include WebGL/Three.js considerations
-    - For enterprise apps: Include security, scalability, multi-user considerations
+SPECIAL DOMAIN HANDLING:
+- For hardware/IoT apps: Include real-time communication, device state management
+- For AI/ML apps: Include data processing pipelines, model management
+- For real-time apps: Include WebSockets, live updates, connection management
+- For 3D/visualization apps: Include WebGL/Three.js considerations
+- For enterprise apps: Include security, scalability, multi-user considerations
 
-    IMPORTANT: Return ONLY the JSON object, nothing else. Analyze the app type and provide domain-appropriate architecture."""
+IMPORTANT: Return ONLY the JSON object, nothing else. Analyze the app type and provide domain-appropriate architecture."""

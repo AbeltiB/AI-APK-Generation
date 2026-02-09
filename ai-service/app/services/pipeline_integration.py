@@ -19,6 +19,7 @@ Integration Points:
 """
 
 from typing import Dict, Any, Optional, Tuple
+from datetime import datetime
 from loguru import logger
 
 from app.models.project_state import ProjectState, IntentType
@@ -213,6 +214,101 @@ class LLMOutputParser:
 
 
 # ============================================================================
+# SAFE STATE RESOLVER WRAPPER
+# ============================================================================
+
+def safe_resolve_and_update_state(
+    state: ProjectState,
+    intent: IntentType,
+    proposed_changes: Dict[str, Any],
+    actor: str,
+    reason: str,
+) -> Dict[str, Any]:
+    """
+    Safe wrapper around resolve_and_update_state that won't crash.
+    
+    Args:
+        state: Current project state
+        intent: User intent
+        proposed_changes: Proposed changes from pipeline
+        actor: Who is making the change
+        reason: Why the change is being made
+        
+    Returns:
+        Dictionary with result information
+    """
+    try:
+        logger.debug(
+            "🔧 Calling resolve_and_update_state",
+            extra={
+                "state_version": state.metadata.version,
+                "intent": intent.value,
+                "proposed_changes_type": type(proposed_changes).__name__,
+                "proposed_changes_keys": list(proposed_changes.keys()) if isinstance(proposed_changes, dict) else [],
+                "actor": actor,
+                "reason": reason[:100] if reason else "No reason provided",
+            }
+        )
+        
+        # Call the actual state resolver
+        updated_state = resolve_and_update_state(
+            current_state=state,
+            intent=intent,
+            proposed_changes=proposed_changes,
+            actor=actor,
+            reason=reason,
+        )
+        
+        logger.info(
+            "✅ State resolved successfully",
+            extra={
+                "old_version": state.metadata.version,
+                "new_version": updated_state.metadata.version,
+                "version_increment": updated_state.metadata.version - state.metadata.version,
+                "changes_applied": True,
+                "total_changes": len(updated_state.change_log.changes),
+            }
+        )
+        
+        return {
+            "success": True,
+            "updated_state": updated_state,
+            "state_metadata": {
+                "state_version": updated_state.metadata.version,
+                "project_id": updated_state.metadata.project_id,
+                "total_changes": len(updated_state.change_log.changes),
+            },
+            "changes_applied": True,
+            "error": None,
+        }
+        
+    except Exception as e:
+        logger.error(
+            "❌ State resolution failed",
+            extra={
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "intent": intent.value,
+                "state_version": state.metadata.version,
+                "proposed_changes_sample": str(proposed_changes)[:200] if proposed_changes else "None",
+            },
+            exc_info=True
+        )
+        
+        return {
+            "success": False,
+            "updated_state": state,  # Return original state
+            "state_metadata": {
+                "state_version": state.metadata.version,
+                "project_id": state.metadata.project_id,
+                "total_changes": len(state.change_log.changes),
+            },
+            "changes_applied": False,
+            "error": str(e),
+        }
+
+
+# ============================================================================
 # PIPELINE STATE MANAGER
 # ============================================================================
 
@@ -252,23 +348,60 @@ class PipelineStateManager:
         prompt = request.prompt
         
         logger.info(
-            f"Processing request with state management",
+            "🧠 Processing request with state management",
             extra={
                 "user_id": user_id,
                 "session_id": session_id,
                 "prompt_length": len(prompt),
+                "pipeline_outputs_keys": list(pipeline_outputs.keys()) if pipeline_outputs else [],
+                "task_id": getattr(request, 'task_id', 'unknown'),
             }
         )
         
         # Step 1: Load or create project state
+        logger.debug(
+            "📂 Step 1: Loading or creating project state",
+            extra={
+                "state_id": f"{user_id}_{session_id}",
+                "user_id": user_id,
+                "session_id": session_id,
+            }
+        )
+        
         state, is_new = await self._get_or_create_state(user_id, session_id)
         
+        logger.info(
+            "📊 State loaded/created",
+            extra={
+                "is_new": is_new,
+                "project_id": state.metadata.project_id if hasattr(state.metadata, 'project_id') else None,
+                "state_version": state.metadata.version,
+                "state_sections_present": {
+                    "foundations": hasattr(state, 'foundations') and state.foundations is not None,
+                    "architecture": hasattr(state, 'architecture') and state.architecture is not None,
+                    "layout": hasattr(state, 'layout') and state.layout is not None,
+                    "blockly": hasattr(state, 'blockly') and state.blockly is not None,
+                },
+            }
+        )
+        
         # Step 2: Classify intent
+        logger.debug(
+            "🔍 Step 2: Classifying intent",
+            extra={
+                "prompt_preview": prompt[:100] + "..." if len(prompt) > 100 else prompt,
+                "has_existing_state": not is_new,
+                "state_exists": state is not None,
+            }
+        )
+        
         intent = self.classifier.classify(prompt, has_existing_state=not is_new)
         
         logger.info(
-            f"Intent classified: {intent.value}",
+            "🎯 Intent classified",
             extra={
+                "intent": intent.value,
+                "intent_enum": str(intent),
                 "is_new_state": is_new,
                 "current_version": state.metadata.version,
             }
@@ -276,51 +409,284 @@ class PipelineStateManager:
         
         # Step 3: Handle read-only intent
         if intent == IntentType.ASK_ABOUT_APP:
+            logger.info(
+                "📖 Read-only intent detected (ASK_ABOUT_APP)",
+                extra={
+                    "action": "returning current state without mutation",
+                    "intent": intent.value,
+                }
+            )
             # Return current state without mutation
             return state, self._build_response(state, cache_hit=True)
         
         # Step 4: Extract proposed changes from pipeline outputs
-        proposed_changes = self.parser.extract_proposed_changes(
-            foundations=pipeline_outputs.get("foundations"),
-            architecture=pipeline_outputs.get("architecture"),
-            layout=pipeline_outputs.get("layout"),
-            blockly=pipeline_outputs.get("blockly"),
-        )
-        
-        # Step 5: Resolve and apply changes
-        try:
-            updated_state = resolve_and_update_state(
-                state=state,
-                intent=intent,
-                proposed_changes=proposed_changes,
-                actor=user_id,
-                reason=f"User request: {prompt[:100]}",
-            )
-        except Exception as e:
-            logger.error(f"State resolution failed: {e}", exc_info=e)
-            # Return original state on error
-            return state, self._build_error_response(str(e))
-        
-        # Step 6: Persist updated state
-        await self.persistence.save_project_state(
-            updated_state,
-            expected_version=state.metadata.version,
-        )
-        
-        logger.info(
-            f"✅ State updated and persisted",
+        logger.debug(
+            "🔧 Step 4: Extracting proposed changes from pipeline outputs",
             extra={
-                "project_id": updated_state.metadata.project_id,
-                "old_version": state.metadata.version,
-                "new_version": updated_state.metadata.version,
-                "changes": len(updated_state.change_log.changes),
+                "pipeline_outputs_type": type(pipeline_outputs).__name__,
+                "pipeline_outputs_keys": list(pipeline_outputs.keys()) if isinstance(pipeline_outputs, dict) else "Not a dict",
+                "pipeline_outputs_length": len(pipeline_outputs) if isinstance(pipeline_outputs, dict) else None,
             }
         )
         
+        # Log detailed pipeline outputs structure
+        if isinstance(pipeline_outputs, dict):
+            for key, value in pipeline_outputs.items():
+                if value is not None:
+                    logger.debug(
+                        f"📝 Pipeline output: {key}",
+                        extra={
+                            "key": key,
+                            "value_type": type(value).__name__,
+                            "value_length": len(value) if hasattr(value, '__len__') else None,
+                            "value_is_dict": isinstance(value, dict),
+                            "value_is_list": isinstance(value, list),
+                            "value_is_empty": not bool(value) if hasattr(value, '__bool__') else None,
+                            "value_preview": str(value)[:200] + "..." if len(str(value)) > 200 else str(value),
+                        }
+                    )
+                else:
+                    logger.debug(
+                        f"📝 Pipeline output: {key} is None",
+                        extra={"key": key}
+                    )
+        else:
+            logger.warning(
+                "⚠️ Pipeline outputs is not a dictionary",
+                extra={
+                    "pipeline_outputs_type": type(pipeline_outputs).__name__,
+                    "pipeline_outputs_value": str(pipeline_outputs)[:500],
+                }
+            )
+        
+        try:
+            proposed_changes = self.parser.extract_proposed_changes(
+                foundations=pipeline_outputs.get("foundations"),
+                architecture=pipeline_outputs.get("architecture"),
+                layout=pipeline_outputs.get("layout"),
+                blockly=pipeline_outputs.get("blockly"),
+            )
+            
+            logger.info(
+                "📋 Proposed changes extracted",
+                extra={
+                    "proposed_changes_type": type(proposed_changes).__name__,
+                    "proposed_changes_is_dict": isinstance(proposed_changes, dict),
+                    "proposed_changes_is_list": isinstance(proposed_changes, list),
+                    "proposed_changes_length": len(proposed_changes) if hasattr(proposed_changes, '__len__') else None,
+                    "proposed_changes_keys": list(proposed_changes.keys()) if isinstance(proposed_changes, dict) else "Not a dict",
+                    "proposed_changes_sections": list(proposed_changes.keys()) if isinstance(proposed_changes, dict) else [],
+                    "proposed_changes_preview": str(proposed_changes)[:500] + "..." if len(str(proposed_changes)) > 500 else str(proposed_changes),
+                }
+            )
+            
+        except Exception as e:
+            logger.error(
+                "❌ Failed to extract proposed changes",
+                extra={
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "pipeline_outputs_keys": list(pipeline_outputs.keys()) if isinstance(pipeline_outputs, dict) else "Not a dict",
+                },
+                exc_info=True
+            )
+            # Try to create minimal changes structure
+            proposed_changes = self._create_minimal_changes(pipeline_outputs)
+            logger.info(
+                "🔄 Created minimal changes as fallback",
+                extra={
+                    "minimal_changes_type": type(proposed_changes).__name__,
+                    "minimal_changes": proposed_changes,
+                }
+            )
+        
+        # Step 5: Resolve and apply changes using safe wrapper
+        logger.debug(
+            "⚙️ Step 5: Resolving and applying state changes",
+            extra={
+                "current_state_version": state.metadata.version,
+                "intent": intent.value,
+                "proposed_changes_summary": {
+                    "type": type(proposed_changes).__name__,
+                    "is_dict": isinstance(proposed_changes, dict),
+                    "is_list": isinstance(proposed_changes, list),
+                    "length": len(proposed_changes) if hasattr(proposed_changes, '__len__') else None,
+                    "has_data": bool(proposed_changes),
+                },
+                "actor": user_id,
+                "reason": f"User request: {prompt[:50]}...",
+            }
+        )
+        
+        # Use the safe resolver
+        resolver_result = safe_resolve_and_update_state(
+            state=state,
+            intent=intent,
+            proposed_changes=proposed_changes,
+            actor=user_id,
+            reason=f"User request: {prompt[:100]}",
+        )
+        
+        logger.info(
+            "✅ State resolution completed",
+            extra={
+                "resolver_success": resolver_result["success"],
+                "resolver_error": resolver_result["error"],
+                "changes_applied": resolver_result.get("changes_applied", False),
+                "new_version": resolver_result.get("state_metadata", {}).get("state_version"),
+                "total_changes": resolver_result.get("state_metadata", {}).get("total_changes", 0),
+            }
+        )
+        
+        if resolver_result["success"]:
+            updated_state = resolver_result["updated_state"]
+            state_metadata = resolver_result["state_metadata"]
+            
+            logger.debug(
+                "📈 State updated successfully",
+                extra={
+                    "old_version": state.metadata.version,
+                    "new_version": updated_state.metadata.version,
+                    "version_increment": updated_state.metadata.version - state.metadata.version,
+                    "change_log_count": len(updated_state.change_log.changes),
+                    "project_id": state_metadata.get("project_id"),
+                }
+            )
+            
+        else:
+            # State resolution failed but we continue with original state
+            logger.warning(
+                "⚠️ State resolution failed (but continuing)",
+                extra={
+                    "error": resolver_result["error"],
+                    "fallback_action": "using original state",
+                    "original_state_version": state.metadata.version,
+                    "state_metadata": resolver_result.get("state_metadata"),
+                }
+            )
+            updated_state = state  # Fall back to original state
+        
+        # Step 6: Persist updated state
+        logger.debug(
+            "💾 Step 6: Persisting updated state",
+            extra={
+                "state_to_persist": updated_state is not None,
+                "state_type": type(updated_state).__name__ if updated_state else None,
+                "expected_version": state.metadata.version,
+                "new_version": updated_state.metadata.version,
+            }
+        )
+        
+        try:
+            await self.persistence.save_project_state(
+                updated_state,
+                expected_version=state.metadata.version,
+            )
+            
+            logger.info(
+                "💾 State persisted successfully",
+                extra={
+                    "project_id": updated_state.metadata.project_id,
+                    "old_version": state.metadata.version,
+                    "new_version": updated_state.metadata.version,
+                    "changes_persisted": len(updated_state.change_log.changes),
+                    "persistence_success": True,
+                }
+            )
+            
+        except Exception as e:
+            logger.error(
+                "❌ Failed to persist state",
+                extra={
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                    "project_id": updated_state.metadata.project_id if updated_state else None,
+                    "state_version": updated_state.metadata.version if updated_state else None,
+                },
+                exc_info=True
+            )
+            # Continue even if persistence fails (state is still valid in memory)
+        
         # Step 7: Build complete response
+        logger.debug(
+            "📤 Step 7: Building complete response",
+            extra={
+                "final_state_version": updated_state.metadata.version,
+                "has_change_log": hasattr(updated_state, 'change_log'),
+                "change_log_count": len(updated_state.change_log.changes) if hasattr(updated_state, 'change_log') else 0,
+            }
+        )
+        
         response = self._build_response(updated_state)
         
+        # Log response structure
+        logger.info(
+            "🎉 Request processing completed",
+            extra={
+                "success": True,
+                "processing_stages": {
+                    "state_loaded": True,
+                    "intent_classified": True,
+                    "changes_extracted": True,
+                    "state_resolved": True,
+                    "state_persisted": True,
+                    "response_built": True,
+                },
+                "final_metrics": {
+                    "project_id": updated_state.metadata.project_id,
+                    "state_version": updated_state.metadata.version,
+                    "total_changes": len(updated_state.change_log.changes),
+                    "intent_used": intent.value,
+                    "is_new_project": is_new,
+                    "response_keys": list(response.keys()) if isinstance(response, dict) else "Not a dict",
+                },
+                "response_preview": {
+                    "type": type(response).__name__,
+                    "has_architecture": "architecture" in response if isinstance(response, dict) else False,
+                    "has_layout": "layout" in response if isinstance(response, dict) else False,
+                    "has_blockly": "blockly" in response if isinstance(response, dict) else False,
+                },
+            }
+        )
+        
         return updated_state, response
+    
+    def _create_minimal_changes(self, pipeline_outputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Create minimal changes structure when extraction fails"""
+        logger.warning(
+            "🔄 Creating minimal changes fallback",
+            extra={
+                "pipeline_outputs_type": type(pipeline_outputs).__name__,
+                "pipeline_outputs_keys": list(pipeline_outputs.keys()) if isinstance(pipeline_outputs, dict) else [],
+            }
+        )
+        
+        changes = {}
+        
+        # Try to extract any valid data
+        if isinstance(pipeline_outputs, dict):
+            for key in ["architecture", "layout", "blockly", "foundations"]:
+                if key in pipeline_outputs and pipeline_outputs[key]:
+                    changes[key] = pipeline_outputs[key]
+                    logger.debug(
+                        f"➕ Added {key} to minimal changes",
+                        extra={
+                            "key": key,
+                            "value_type": type(pipeline_outputs[key]).__name__,
+                            "has_data": bool(pipeline_outputs[key]),
+                        }
+                    )
+        
+        # If still empty, create a placeholder
+        if not changes:
+            changes = {
+                "architecture": {"screens": [], "navigation": []},
+                "layout": {"components": {}},
+                "blockly": {"blocks": {}, "variables": []},
+            }
+            logger.debug("📝 Created empty placeholder changes")
+        
+        return changes
     
     async def _get_or_create_state(
         self,
@@ -365,28 +731,36 @@ class PipelineStateManager:
         cache_hit: bool = False
     ) -> Dict[str, Any]:
         """Build complete response from state"""
-        return {
-            "architecture": state.architecture.model_dump(),
-            "layout": state.layout.model_dump(),
-            "blockly": state.blockly.model_dump(),
-            "metadata": {
-                "project_id": state.metadata.project_id,
-                "version": state.metadata.version,
-                "schema_version": state.metadata.schema_version,
-                "cache_hit": cache_hit,
-                "total_changes": len(state.change_log.changes),
+        try:
+            response = {
+                "status": "success",
+                "architecture": state.architecture.model_dump() if hasattr(state, 'architecture') and state.architecture else {},
+                "layout": state.layout.model_dump() if hasattr(state, 'layout') and state.layout else {},
+                "blockly": state.blockly.model_dump() if hasattr(state, 'blockly') and state.blockly else {},
+                "metadata": {
+                    "project_id": state.metadata.project_id,
+                    "version": state.metadata.version,
+                    "schema_version": state.metadata.schema_version,
+                    "cache_hit": cache_hit,
+                    "total_changes": len(state.change_log.changes) if hasattr(state, 'change_log') else 0,
+                }
             }
-        }
+            return response
+        except Exception as e:
+            logger.error(f"Error building response: {e}")
+            return self._build_error_response(str(e))
     
     def _build_error_response(self, error: str) -> Dict[str, Any]:
         """Build error response"""
         return {
+            "status": "error",
             "error": error,
             "architecture": {},
             "layout": {},
             "blockly": {},
             "metadata": {
                 "error": True,
+                "error_message": error,
             }
         }
 

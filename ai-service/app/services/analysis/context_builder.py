@@ -25,7 +25,7 @@ class ContextRelevanceScore:
         project: Dict[str, Any],
         user_id: str,
         session_id: str,
-        intent: IntentAnalysis
+        intent: Any
     ) -> float:
         """Calculate relevance score (0.0 to 1.0)."""
         score = 0.0
@@ -34,6 +34,12 @@ class ContextRelevanceScore:
         if project.get('user_id') != user_id:
             return 0.0  # Wrong user - NEVER return
         
+        # Extract requires_context from intent (handling both dict and object)
+        if isinstance(intent, dict):
+            requires_context = intent.get('requires_context', False)
+        else:
+            requires_context = getattr(intent, 'requires_context', False)
+
         # Session match (highest weight)
         project_metadata = project.get('metadata', {})
         if project_metadata.get('session_id') == session_id:
@@ -50,7 +56,7 @@ class ContextRelevanceScore:
                 score += 0.1
         
         # Intent match
-        if intent.requires_context:
+        if requires_context:
             score += 0.1
         
         return min(score, 1.0)
@@ -67,28 +73,53 @@ class ContextBuilder:
         user_id: str,
         session_id: str,
         prompt: str,
-        intent: IntentAnalysis,
+        intent: Any,
         original_request: Dict[str, Any],
         project_id: Optional[str] = None
     ) -> EnrichedContext:
         """Build comprehensive enriched context."""
         
         with log_context(operation="context_building"):
+            #Extract intent fields may be handle both
+            if isinstance(intent, dict):
+                intent_type = intent.get('intent_type', 'unknown')
+                complexity = intent.get('complexity', 'unknown')
+                confidence = intent.get('confidence', 0.0)
+                requires_context = intent.get('requires_context', False) 
+            else:
+                intent_type = getattr(intent, 'intent_type', 'unknown')
+                complexity = getattr(intent, 'complexity', 'unknown')
+                confidence = getattr(intent, 'confidence', 0.0)
+                requires_context = getattr(intent, 'requires_context', False)
+            
             logger.info(
                 "context.building.started",
                 extra={
                     "user_id": user_id,
                     "session_id": session_id,
-                    "requires_context": intent.requires_context,
+                    "requires_context": requires_context,
                     "explicit_project_id": project_id is not None,
-                    "intent_type": intent.intent_type,
-                    "complexity": intent.complexity
+                    "intent_type": intent_type,
+                    "complexity": complexity
                 }
             )
             
+            try:
+                from app.models.schemas import IntentAnalysis
+                intent_obj = IntentAnalysis(
+                    intent_type=intent_type,
+                    complexity=complexity,
+                    confidence=confidence,
+                    requires_context=requires_context,
+                    # Add other required fields...
+                )
+            except ImportError:
+                # If IntentAnalysis model doesn't exist, use the dict
+                intent_obj = intent
+
             context = EnrichedContext(
                 original_request=original_request,
-                intent_analysis=intent,
+                intent_analysis=intent_obj,
                 conversation_history=[],
                 existing_project=None,
                 user_preferences={},
@@ -111,7 +142,7 @@ class ContextBuilder:
                 context.conversation_history = []
             
             # Load existing project with strict validation
-            if intent.requires_context or project_id:
+            if (isinstance(intent, dict) and intent.get('requires_context')) or project_id:
                 try:
                     context.existing_project = await self._load_existing_project_safe(
                         user_id=user_id,

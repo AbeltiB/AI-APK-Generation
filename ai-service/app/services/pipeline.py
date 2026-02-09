@@ -14,6 +14,7 @@ AI Pipeline - Llama3 Version
 
 All generation uses Llama3 as primary provider with heuristic fallback.
 """
+import app.api.v1.results
 import time
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime, timezone
@@ -46,7 +47,8 @@ class PipelineStage:
     
     async def execute(self, request: AIRequest, context: Dict[str, Any]) -> Dict[str, Any]:
         """Execute stage - must be implemented by subclasses"""
-        raise NotImplementedError
+        logger.warning("Pipeline base execute() called — skipping")
+        return {}
     
     async def on_error(self, error: Exception, request: AIRequest, context: Dict[str, Any]):
         """Handle errors - can be overridden"""
@@ -147,8 +149,10 @@ class IntentAnalysisStage(PipelineStage):
     
     def __init__(self):
         super().__init__("intent_analysis")
+        print(f"DEBUG: IntentAnalysisStage initialized")
     
     async def execute(self, request: AIRequest, context: Dict[str, Any]) -> Dict[str, Any]:
+        print(f"DEBUG: IntentAnalysisStage.execute() called")
         """Analyze intent"""
         
         # Skip if cache hit
@@ -167,23 +171,32 @@ class IntentAnalysisStage(PipelineStage):
             context=analysis_context
         )
         
+        # Extract fields from intent (handling both object and dict)
+        if isinstance(intent, dict):
+            intent_type = intent.get('intent_type', 'unknown')
+            complexity = intent.get('complexity', 'unknown')
+            confidence = intent.get('confidence', 0.0)
+        else:
+            intent_type = getattr(intent, 'intent_type', 'unknown')
+            complexity = getattr(intent, 'complexity', 'unknown')
+            confidence = getattr(intent, 'confidence', 0.0)
+
         context['intent'] = intent
         
         logger.info(
             "pipeline.intent_analysis.complete",
             extra={
-                "intent_type": intent.intent_type,
-                "complexity": intent.complexity,
-                "confidence": intent.confidence
+                "intent_type": intent_type,
+                "complexity": complexity,  
+                "confidence": confidence   
             }
         )
         
         return {
-            "intent_type": intent.intent_type,
-            "complexity": intent.complexity,
-            "confidence": intent.confidence
+            "intent_type": intent_type,
+            "complexity": complexity,
+            "confidence": confidence
         }
-
 
 class ContextBuildingStage(PipelineStage):
     """Stage 5: Build enriched context"""
@@ -230,7 +243,7 @@ class ContextBuildingStage(PipelineStage):
         }
 
 
-class Ar3t24NpUrJMNunMMASmhAM953bFGeLXzN7(PipelineStage):
+class ArchitectureGenerationStage(PipelineStage):
     """Stage 6: Generate architecture with Llama3"""
     
     def __init__(self):
@@ -616,7 +629,7 @@ class Pipeline:
             CacheCheckStage(),
             IntentAnalysisStage(),
             ContextBuildingStage(),
-            Ar3t24NpUrJMNunMMASmhAM953bFGeLXzN7(),
+            ArchitectureGenerationStage(),
             LayoutGenerationStage(),
             BlocklyGenerationStage(),
             CacheSaveStage()
@@ -872,7 +885,7 @@ class Pipeline:
         complete_response = CompleteResponse(
             task_id=task_id,
             socket_id=socket_id,
-            status="success" if result.get('metadata', {}).get('success', True) else "partial",
+            status="success" if result.get('metadata', {}).get('success', True) else "partial_success",
             result=result,
             metadata=result.get('metadata', {})
         )

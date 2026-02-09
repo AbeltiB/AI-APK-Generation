@@ -33,7 +33,7 @@ class Llama3Provider(BaseLLMProvider):
             "llama3_api_url", 
             "https://fastchat.ideeza.com/v1/chat/completions"
         )
-        self.model = config.get("llama3_model", "llama-3-70b-instruct")
+        self.model = config.get("llama3_model", "llama-3")
         self.api_key = config.get("llama3_api_key")
         
         # Request configuration

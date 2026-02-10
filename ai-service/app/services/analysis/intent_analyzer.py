@@ -1,84 +1,245 @@
 """
-Intent Analyzer - Production Ready with Enhanced LLM Integration
-
-Enhanced version that works with the upgraded LLM module and proper schema alignment.
+Enhanced Intent Analyzer - Production Ready with Domain Awareness and Llama3
+Integrates with existing codebase structure
 """
 import json
 import re
-import logging
-from typing import Dict, Any, Optional, List
+import asyncio
+import hashlib
+from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
+import httpx
 
-from app.llm.orchestrator import LLMOrchestrator
-from app.llm.prompt_manager import PromptManager, PromptType, PromptVersion
-from app.llm.base import LLMMessage
 from app.utils.logging import get_logger, log_context
 from app.config import settings
 
 logger = get_logger(__name__)
 
 
-class LlamaIntentAnalyzer:
+class IntentType(str):
+    """Types of user intents - Compatible with existing code"""
+    CREATE_NEW = "new_app"
+    MODIFY_EXISTING = "modify_app"
+    EXTEND_FEATURES = "extend_app"
+    BUG_FIX = "bug_fix"
+    OPTIMIZE = "optimize_performance"
+    CLARIFICATION = "clarification"
+    HELP = "help"
+    OTHER = "other"
+
+
+class AppDomain(str):
+    """Application domains - Matching existing enums"""
+    PRODUCTIVITY = "productivity"
+    ENTERTAINMENT = "entertainment"
+    UTILITY = "utility"
+    BUSINESS = "business"
+    EDUCATION = "education"
+    HEALTH_FITNESS = "health_fitness"
+    FINANCE = "finance"
+    DEVELOPMENT = "development"
+    IOT_HARDWARE = "iot_hardware"
+    CREATIVE_MEDIA = "creative_media"
+    DATA_SCIENCE = "data_science"
+    CUSTOM = "custom"
+
+
+class ComplexityLevel(str):
+    """Complexity levels - Matching existing enums"""
+    SIMPLE = "simple"
+    MEDIUM = "medium"
+    COMPLEX = "complex"
+    SIMPLE_UI = "simple_ui"
+    DATA_DRIVEN = "data_driven"
+    INTEGRATED = "integrated"
+    ENTERPRISE = "enterprise"
+    HARDWARE = "hardware"
+    AI_ML = "ai_ml"
+
+
+class EnhancedLlama3IntentAnalyzer:
     """
-    Production intent analyzer using enhanced LLM module with:
-    - Strict JSON schema enforcement
-    - Better error handling
-    - Response validation
-    - Performance monitoring
+    Production-ready intent analyzer that replaces LlamaIntentAnalyzer
+    Enhanced with domain awareness and Llama3 integration
     """
     
     def __init__(self, config: Dict[str, Any]):
-        """
-        Initialize with LLM configuration
+        """Initialize with enhanced capabilities"""
+        # Llama3 configuration from settings
+        self.api_url = config.get('llama3_api_url')
+        self.api_key = config.get('llama3_api_key')
+        self.model = config.get('llama3_model', 'llama-3-70b-instruct')
+        self.timeout = config.get('timeout', 60.0)
+        self.max_retries = config.get('max_retries', 3)
         
-        Args:
-            config: LLM configuration dictionary
-        """
-        # Initialize orchestrator with config
-        self.orchestrator = LLMOrchestrator(config)
-        self.prompt_manager = PromptManager(default_version=PromptVersion.V3)
+        if not self.api_url:
+            raise ValueError("Llama3 API URL is required")
         
-        # Initialize intent cache
-        self.intent_cache: Dict[str, tuple[Dict[str, Any], datetime]] = {}
+        # Initialize cache and stats (compatible with existing code)
+        self.intent_cache: Dict[str, tuple] = {}
         self.cache_ttl = 300  # 5 minutes
         
-        # Statistics
         self.stats = {
             'total_requests': 0,
             'llama3_success': 0,
             'heuristic_fallback': 0,
             'cache_hits': 0,
             'validation_failures': 0,
-            'avg_response_time': 0.0
+            'avg_response_time': 0.0,
+            'domain_breakdown': {},
+            'complexity_distribution': {
+                'simple': 0, 'medium': 0, 'complex': 0,
+                'simple_ui': 0, 'data_driven': 0, 'integrated': 0,
+                'enterprise': 0, 'hardware': 0, 'ai_ml': 0
+            }
         }
         
-        # Response time tracking
         self.response_times: List[float] = []
         
         logger.info(
-            "Intent analyzer initialized",
+            "Enhanced intent analyzer initialized",
             extra={
-                "provider": "llama3",
-                "fallback": "heuristic",
-                "prompt_version": "v3"
+                "model": self.model,
+                "api_url": self.api_url,
+                "cache_ttl": self.cache_ttl
             }
         )
+    
+    # ====== COMPATIBLE METHODS (same interface as old analyzer) ======
+    
+    async def analyze(
+        self,
+        prompt: str,
+        context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Main analysis method - Same interface as old LlamaIntentAnalyzer
+        """
+        return await self.analyze_intent(prompt, context)
+    
+    async def analyze_intent(
+        self,
+        prompt: str,
+        context: Optional[Dict[str, Any]] = None,
+        force_llama3: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Enhanced analysis with domain awareness
+        Returns same format as old analyzer for compatibility
+        """
+        start_time = datetime.now()
+        self.stats['total_requests'] += 1
+        
+        with log_context(operation="intent_analysis"):
+            logger.info(
+                "Enhanced intent analysis started",
+                extra={
+                    "prompt_length": len(prompt),
+                    "has_context": context is not None
+                }
+            )
+            
+            # Generate cache key
+            cache_key = self._get_cache_key(prompt, context)
+            
+            # Check cache
+            cached_intent = self._get_cached_intent(cache_key)
+            if cached_intent:
+                self.stats['cache_hits'] += 1
+                logger.info("Intent cache hit")
+                return cached_intent
+            
+            try:
+                # Step 1: Detect domain
+                domain_info = self._detect_domain(prompt, context)
+                
+                # Step 2: Extract requirements
+                special_reqs = self._extract_requirements(prompt, domain_info)
+                
+                # Step 3: Try Llama3
+                if force_llama3 or self._should_use_llama3(domain_info, special_reqs):
+                    try:
+                        llm_result = await self._analyze_with_llama3(
+                            prompt, domain_info, special_reqs, context
+                        )
+                        
+                        if llm_result and llm_result.get('confidence', 0) > 0.6:
+                            self.stats['llama3_success'] += 1
+                            
+                            # Convert to compatible format
+                            result = self._convert_to_compatible_format(llm_result, domain_info)
+                            result['metadata']['source'] = 'llama3'
+                            
+                            # Cache and track
+                            self._cache_intent(cache_key, result)
+                            self._update_stats(domain_info, result)
+                            
+                            response_time = (datetime.now() - start_time).total_seconds()
+                            self._track_response_time(response_time)
+                            
+                            logger.info(
+                                "Intent analysis successful",
+                                extra={
+                                    "intent_type": result.get('intent_type'),
+                                    "app_type": result.get('app_type'),
+                                    "confidence": result.get('confidence'),
+                                    "response_time": f"{response_time:.2f}s"
+                                }
+                            )
+                            
+                            return result
+                        else:
+                            self.stats['validation_failures'] += 1
+                            logger.warning("LLM validation failed, falling back")
+                    
+                    except Exception as e:
+                        logger.warning(
+                            "Llama3 intent analysis failed",
+                            extra={"error": str(e)}
+                        )
+                
+                # Step 4: Fallback to heuristic
+                logger.info("Using enhanced heuristic fallback")
+                self.stats['heuristic_fallback'] += 1
+                
+                heuristic_result = self._enhanced_heuristic_analysis(
+                    prompt, domain_info, special_reqs, context
+                )
+                
+                # Convert to compatible format
+                result = self._convert_to_compatible_format(heuristic_result, domain_info)
+                result['metadata']['source'] = 'heuristic'
+                
+                # Cache and track
+                self._cache_intent(cache_key, result)
+                self._update_stats(domain_info, result)
+                
+                response_time = (datetime.now() - start_time).total_seconds()
+                self._track_response_time(response_time)
+                
+                return result
+                
+            except Exception as e:
+                logger.error(
+                    "Intent analysis failed completely",
+                    extra={"error": str(e)},
+                    exc_info=True
+                )
+                
+                return self._emergency_fallback(prompt)
+    
+    # ====== CACHE METHODS (compatible with existing) ======
     
     def _get_cache_key(self, prompt: str, context: Optional[Dict[str, Any]]) -> str:
         """Generate cache key from prompt and context"""
         import hashlib
         
-        # Normalize prompt (lowercase, strip whitespace)
         normalized_prompt = prompt.lower().strip()
-        
-        # Include context in cache key if provided
         context_str = ""
         if context:
-            # Sort context keys for consistent hashing
             sorted_context = json.dumps(context, sort_keys=True)
             context_str = f"|{sorted_context}"
         
-        # Create hash
         combined = f"{normalized_prompt}{context_str}"
         return hashlib.md5(combined.encode()).hexdigest()
     
@@ -92,7 +253,6 @@ class LlamaIntentAnalyzer:
                 logger.debug(f"Cache hit for key: {cache_key[:8]}")
                 return intent_data
             else:
-                # Remove expired cache entry
                 del self.intent_cache[cache_key]
         
         return None
@@ -101,382 +261,254 @@ class LlamaIntentAnalyzer:
         """Cache intent result"""
         self.intent_cache[cache_key] = (intent_data, datetime.now())
     
-    async def analyze(
-        self,
-        prompt: str,
-        context: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """
-        Analyze user prompt to determine intent with enhanced validation.
-        
-        Returns a standardized intent dictionary that can be used by downstream systems.
-        
-        Args:
-            prompt: User's natural language request
-            context: Optional context (conversation history, existing project)
-            
-        Returns:
-            Dict with intent analysis including:
-            - intent_type: "new_app", "extend_app", "modify_app", "clarification", "help"
-            - app_type: "counter", "todo", "calculator", "weather", "notes", "generic"
-            - complexity: "simple", "medium", "complex"
-            - confidence: float 0-1
-            - extracted_features: List of features/components
-            - requires_context: bool
-            - needs_clarification: bool
-            - action: "proceed", "clarify", "reject"
-        """
-        self.stats['total_requests'] += 1
-        start_time = datetime.now()
-        
-        with log_context(operation="intent_analysis"):
-            logger.info(
-                "Intent analysis started",
-                extra={
-                    "prompt_length": len(prompt),
-                    "has_context": context is not None
-                }
-            )
-            
-            # Check cache first
-            cache_key = self._get_cache_key(prompt, context)
-            cached_intent = self._get_cached_intent(cache_key)
-            if cached_intent:
-                self.stats['cache_hits'] += 1
-                logger.info("Intent cache hit")
-                return cached_intent
-            
-            try:
-                # Build messages using prompt manager
-                messages = self._build_enhanced_messages(prompt, context)
-                
-                # Try Llama3 with enhanced settings
-                try:
-                    logger.info("Attempting intent analysis with Llama3")
-                    
-                    response = await self.orchestrator.generate(
-                        messages=messages,
-                        temperature=0.3,  # Low temperature for classification
-                        max_tokens=800,
-                        validate_json=True,
-                        json_response=True  # Request JSON response
-                    )
-                    
-                    # Validate and parse response
-                    intent_data = self._parse_and_validate_response(response, prompt)
-                    
-                    if intent_data:
-                        self.stats['llama3_success'] += 1
-                        
-                        # Calculate response time
-                        response_time = (datetime.now() - start_time).total_seconds()
-                        self.response_times.append(response_time)
-                        self.stats['avg_response_time'] = sum(self.response_times) / len(self.response_times)
-                        
-                        logger.info(
-                            "Intent analysis successful",
-                            extra={
-                                "intent_type": intent_data.get('intent_type'),
-                                "app_type": intent_data.get('app_type'),
-                                "confidence": intent_data.get('confidence'),
-                                "response_time": f"{response_time:.2f}s"
-                            }
-                        )
-                        
-                        # Cache successful result
-                        self._cache_intent(cache_key, intent_data)
-                        
-                        return intent_data
-                    else:
-                        self.stats['validation_failures'] += 1
-                        logger.warning("Intent validation failed, falling back")
-                
-                except Exception as e:
-                    logger.warning(
-                        "Llama3 intent analysis failed",
-                        extra={"error": str(e)}
-                    )
-                
-                # Fallback to enhanced heuristic
-                logger.info("Using enhanced heuristic fallback")
-                self.stats['heuristic_fallback'] += 1
-                
-                intent_data = self._enhanced_heuristic_analysis(prompt, context)
-                
-                # Cache heuristic result (shorter TTL)
-                self._cache_intent(cache_key, intent_data)
-                
-                return intent_data
-                
-            except Exception as e:
-                logger.error(
-                    "Intent analysis failed completely",
-                    extra={"error": str(e)},
-                    exc_info=True
-                )
-                
-                # Emergency fallback
-                return self._emergency_fallback(prompt)
+    # ====== DOMAIN DETECTION METHODS ======
     
-    def _build_enhanced_messages(
-        self,
-        prompt: str,
-        context: Optional[Dict[str, Any]]
-    ) -> List[LLMMessage]:
-        """Build enhanced messages for intent analysis"""
+    def _detect_domain(self, prompt: str, context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Detect domain and app type"""
+        prompt_lower = prompt.lower()
         
-        # Use prompt manager to build messages
-        variables = {
-            "user_prompt": prompt,
-            "has_context": context is not None,
-            "timestamp": datetime.now().isoformat()
+        # Hardware detection
+        hardware_types = {
+            "drone": ["drone", "quadcopter", "uav", "flight", "fpv"],
+            "3d_printer": ["3d printer", "filament", "gcode", "print"],
+            "iot_device": ["iot", "sensor", "smart home", "device"]
         }
         
-        messages = self.prompt_manager.build_messages(
-            prompt_type=PromptType.INTENT_ANALYSIS,
-            user_input=prompt,
-            variables=variables,
-            version=PromptVersion.V3
-        )
+        for hw_type, keywords in hardware_types.items():
+            if any(keyword in prompt_lower for keyword in keywords):
+                return {
+                    "domain": AppDomain.IOT_HARDWARE,
+                    "specific_type": hw_type,
+                    "confidence": 0.8,
+                    "is_specialized": True
+                }
         
-        # Add context if available
-        if context:
-            context_message = f"\n\nContext Information:\n{json.dumps(context, indent=2)}"
-            messages[-1].content += context_message  # Add to user message
+        # AI detection
+        ai_types = {
+            "image_to_3d": ["image to 3d", "3d model", "convert image"],
+            "ai_model_trainer": ["train model", "predict", "classify", "ai"]
+        }
         
-        return messages
-    
-    def _parse_and_validate_response(
-        self, 
-        response: Any,  # Using Any since LLMResponse is from different module
-        original_prompt: str
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Parse and validate LLM response with enhanced validation.
+        for ai_type, keywords in ai_types.items():
+            if any(keyword in prompt_lower for keyword in keywords):
+                return {
+                    "domain": AppDomain.CREATIVE_MEDIA,
+                    "specific_type": ai_type,
+                    "confidence": 0.8,
+                    "is_specialized": True
+                }
         
-        Note: response should be an LLMResponse object from the upgraded LLM module
-        """
+        # Standard domain detection
+        domain_patterns = {
+            AppDomain.PRODUCTIVITY: ["todo", "calendar", "notes", "task"],
+            AppDomain.ENTERTAINMENT: ["music", "video", "game", "player"],
+            AppDomain.UTILITY: ["calculator", "converter", "scanner"],
+            AppDomain.FINANCE: ["budget", "expense", "bank", "money"],
+            AppDomain.HEALTH_FITNESS: ["fitness", "workout", "health", "tracker"]
+        }
         
-        # Check if response has extracted_json (from upgraded LLM module)
-        if hasattr(response, 'extracted_json') and response.extracted_json:
-            intent_data = response.extracted_json
-        else:
-            # Fallback to parsing content
-            content = response.content.strip()
-            intent_data = self._extract_json_from_content(content)
+        best_score = 0
+        best_domain = AppDomain.CUSTOM
+        best_type = "generic"
         
-        if not intent_data:
-            logger.warning("No JSON extracted from response")
-            return None
-        
-        # Enhanced validation
-        validation_result = self._validate_intent_data(intent_data, original_prompt)
-        
-        if validation_result["is_valid"]:
-            # Add metadata
-            intent_data["metadata"] = {
-                "source": "llama3",
-                "confidence": intent_data.get("confidence", 0.7),
-                "validated": True,
-                "validation_score": validation_result["score"],
-                "timestamp": datetime.now().isoformat()
-            }
-            
-            # Determine action based on confidence
-            confidence = intent_data.get("confidence", 0.5)
-            if confidence >= 0.8:
-                intent_data["action"] = "proceed"
-                intent_data["needs_clarification"] = False
-            elif confidence >= 0.6:
-                intent_data["action"] = "proceed"
-                intent_data["needs_clarification"] = True
-            elif confidence >= 0.4:
-                intent_data["action"] = "clarify"
-                intent_data["needs_clarification"] = True
-            else:
-                intent_data["action"] = "clarify"
-                intent_data["needs_clarification"] = True
-            
-            return intent_data
-        
-        logger.warning(
-            "Intent validation failed",
-            extra={
-                "errors": validation_result["errors"],
-                "score": validation_result["score"]
-            }
-        )
-        return None
-    
-    def _extract_json_from_content(self, content: str) -> Optional[Dict[str, Any]]:
-        """Extract JSON from LLM response with multiple strategies"""
-        
-        # Clean content
-        content = content.strip()
-        
-        # Strategy 1: Try parsing as pure JSON
-        try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            pass
-        
-        # Strategy 2: Extract from markdown code blocks
-        import re
-        
-        # Pattern for ```json ... ``` or ``` ... ```
-        json_pattern = r'```(?:json)?\s*(\{.*?\})\s*```'
-        match = re.search(json_pattern, content, re.DOTALL)
-        
-        if match:
-            try:
-                return json.loads(match.group(1))
-            except json.JSONDecodeError:
-                pass
-        
-        # Strategy 3: Find JSON object in text
-        brace_start = content.find('{')
-        brace_end = content.rfind('}')
-        
-        if brace_start != -1 and brace_end > brace_start:
-            json_str = content[brace_start:brace_end + 1]
-            try:
-                return json.loads(json_str)
-            except json.JSONDecodeError:
-                pass
-        
-        # Strategy 4: Fix common JSON issues
-        fixed_content = self._fix_common_json_issues(content)
-        try:
-            return json.loads(fixed_content)
-        except json.JSONDecodeError:
-            pass
-        
-        return None
-    
-    def _fix_common_json_issues(self, content: str) -> str:
-        """Fix common JSON formatting issues"""
-        
-        # Remove trailing commas
-        content = re.sub(r',\s*}', '}', content)
-        content = re.sub(r',\s*]', ']', content)
-        
-        # Fix unquoted keys
-        content = re.sub(r'(\{|\,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', content)
-        
-        # Fix single quotes to double quotes
-        content = re.sub(r"'([^']*)'", r'"\1"', content)
-        
-        return content
-    
-    def _validate_intent_data(
-        self, 
-        intent_data: Dict[str, Any], 
-        original_prompt: str
-    ) -> Dict[str, Any]:
-        """
-        Validate intent data with scoring system.
-        
-        Returns dict with:
-        - is_valid: bool
-        - score: float 0-1
-        - errors: List of validation errors
-        """
-        
-        errors = []
-        score = 1.0
-        penalty = 0.1  # Penalty per error
-        
-        # Required fields
-        required_fields = ["intent_type", "complexity", "confidence"]
-        for field in required_fields:
-            if field not in intent_data:
-                errors.append(f"Missing required field: {field}")
-                score -= penalty
-        
-        # Validate intent_type
-        valid_intent_types = ["new_app", "extend_app", "modify_app", "clarification", "help"]
-        intent_type = intent_data.get("intent_type")
-        if intent_type and intent_type not in valid_intent_types:
-            errors.append(f"Invalid intent_type: {intent_type}")
-            score -= penalty
-        
-        # Validate complexity
-        valid_complexities = ["simple", "medium", "complex"]
-        complexity = intent_data.get("complexity")
-        if complexity and complexity not in valid_complexities:
-            errors.append(f"Invalid complexity: {complexity}")
-            score -= penalty
-        
-        # Validate confidence
-        confidence = intent_data.get("confidence")
-        if confidence is not None:
-            if not isinstance(confidence, (int, float)):
-                errors.append("Confidence must be a number")
-                score -= penalty
-            elif confidence < 0 or confidence > 1:
-                errors.append("Confidence must be between 0 and 1")
-                score -= penalty
-        
-        # Check extracted_entities if present
-        if "extracted_entities" in intent_data:
-            entities = intent_data["extracted_entities"]
-            if not isinstance(entities, dict):
-                errors.append("extracted_entities must be a dictionary")
-                score -= penalty
-        
-        # Validate against original prompt (basic coherence check)
-        if intent_type == "new_app" and len(original_prompt.split()) < 3:
-            errors.append("New app request seems too short for meaningful analysis")
-            score -= penalty * 0.5
+        for domain, keywords in domain_patterns.items():
+            matches = sum(1 for kw in keywords if kw in prompt_lower)
+            if matches > 0:
+                score = matches / len(keywords)
+                if score > best_score:
+                    best_score = score
+                    best_domain = domain
+                    best_type = keywords[0] if keywords else "generic"
         
         return {
-            "is_valid": len(errors) == 0,
-            "score": max(0.0, score),  # Don't go below 0
-            "errors": errors
+            "domain": best_domain,
+            "specific_type": best_type,
+            "confidence": min(0.9, 0.5 + best_score * 0.4),
+            "is_specialized": best_domain in [AppDomain.IOT_HARDWARE, AppDomain.CREATIVE_MEDIA]
         }
+    
+    def _extract_requirements(self, prompt: str, domain_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract specialized requirements"""
+        prompt_lower = prompt.lower()
+        
+        requirements = {
+            "needs_hardware": domain_info.get("is_specialized", False) and domain_info["domain"] == AppDomain.IOT_HARDWARE,
+            "needs_ai_ml": domain_info.get("is_specialized", False) and domain_info["domain"] == AppDomain.CREATIVE_MEDIA,
+            "needs_real_time": any(word in prompt_lower for word in ["real-time", "live", "stream", "control"]),
+            "needs_3d": any(word in prompt_lower for word in ["3d", "three.js", "webgl"]),
+            "special_apis": [],
+            "complex_components": []
+        }
+        
+        # Add specific APIs based on domain
+        if requirements["needs_hardware"]:
+            requirements["special_apis"] = ["bluetooth", "websockets", "serial"]
+        
+        if requirements["needs_ai_ml"]:
+            requirements["special_apis"] = ["tensorflow.js", "webgl", "webworkers"]
+        
+        if requirements["needs_real_time"]:
+            if "websockets" not in requirements["special_apis"]:
+                requirements["special_apis"].append("websockets")
+        
+        if requirements["needs_3d"]:
+            if "webgl" not in requirements["special_apis"]:
+                requirements["special_apis"].append("webgl")
+            if "three.js" not in requirements["special_apis"]:
+                requirements["special_apis"].append("three.js")
+        
+        return requirements
+    
+    def _should_use_llama3(self, domain_info: Dict[str, Any], requirements: Dict[str, Any]) -> bool:
+        """Determine if Llama3 should be used"""
+        # Use Llama3 for specialized domains
+        if domain_info["is_specialized"]:
+            return True
+        
+        # Use Llama3 for complex requirements
+        if any([requirements["needs_hardware"], requirements["needs_ai_ml"], 
+                requirements["needs_real_time"], requirements["needs_3d"]]):
+            return True
+        
+        # Use Llama3 for low confidence
+        if domain_info["confidence"] < 0.7:
+            return True
+        
+        return False
+    
+    # ====== LLAMA3 INTEGRATION ======
+    
+    async def _analyze_with_llama3(
+        self,
+        prompt: str,
+        domain_info: Dict[str, Any],
+        requirements: Dict[str, Any],
+        context: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Analyze with Llama3 API"""
+        system_prompt = self._build_llama3_prompt(domain_info, requirements)
+        user_prompt = f"User request: {prompt}"
+        
+        if context:
+            user_prompt += f"\nContext: {json.dumps(context, indent=2)}"
+        
+        try:
+            response = await self._call_llama3_api(system_prompt, user_prompt)
+            
+            if response and 'choices' in response:
+                content = response['choices'][0]['message']['content']
+                return self._parse_llama3_response(content)
+                
+        except Exception as e:
+            logger.error(f"Llama3 API call failed: {e}")
+        
+        return None
+    
+    def _build_llama3_prompt(self, domain_info: Dict[str, Any], requirements: Dict[str, Any]) -> str:
+        """Build system prompt for Llama3"""
+        return f"""You are an intent classifier for an app generation system.
+
+Analyze the user request and provide JSON response with:
+
+1. intent_type: "new_app", "extend_app", "modify_app", "clarification", "help"
+2. app_type: specific app category
+3. complexity: "simple", "medium", "complex"
+4. confidence: float 0-1
+5. extracted_features: list of features/components
+6. requires_context: boolean
+7. needs_clarification: boolean
+8. action: "proceed", "clarify", "reject"
+
+Domain: {domain_info['domain']}
+App Type: {domain_info['specific_type']}
+Requirements: {json.dumps(requirements, indent=2)}
+
+Respond ONLY with valid JSON, no additional text."""
+    
+    async def _call_llama3_api(self, system_prompt: str, user_prompt: str) -> Optional[Dict[str, Any]]:
+        """Call Llama3 API"""
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "temperature": 0.3,
+            "max_tokens": 800
+        }
+        
+        headers = {
+            "Content-Type": "application/json"
+        }
+        
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(self.api_url, json=payload, headers=headers)
+                response.raise_for_status()
+                return response.json()
+        except Exception as e:
+            logger.error(f"Llama3 API error: {e}")
+            return None
+    
+    def _parse_llama3_response(self, content: str) -> Optional[Dict[str, Any]]:
+        """Parse Llama3 response"""
+        try:
+            # Clean content
+            content = content.strip()
+            
+            # Extract JSON
+            if '```json' in content:
+                content = content.split('```json')[1].split('```')[0].strip()
+            elif '```' in content:
+                content = content.split('```')[1].split('```')[0].strip()
+            
+            # Parse JSON
+            return json.loads(content)
+        except json.JSONDecodeError:
+            # Try to find JSON object
+            match = re.search(r'\{.*\}', content, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group())
+                except json.JSONDecodeError:
+                    pass
+        return None
+    
+    # ====== HEURISTIC ANALYSIS ======
     
     def _enhanced_heuristic_analysis(
         self,
         prompt: str,
+        domain_info: Dict[str, Any],
+        requirements: Dict[str, Any],
         context: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        """
-        Enhanced heuristic analysis with app type detection.
-        """
+        """Enhanced heuristic analysis"""
         prompt_lower = prompt.lower()
         
-        # Detect app type
-        app_type = self._detect_app_type(prompt_lower)
-        
         # Detect intent type
-        intent_type = self._detect_intent_type(prompt_lower, context)
+        intent_type = self._detect_heuristic_intent(prompt_lower, context)
+        
+        # Detect app type
+        app_type = self._detect_heuristic_app_type(prompt_lower, domain_info)
         
         # Detect complexity
-        complexity = self._detect_complexity(prompt_lower)
+        complexity = self._detect_heuristic_complexity(prompt_lower, requirements)
         
         # Extract features
-        extracted_features = self._extract_features(prompt_lower)
+        extracted_features = self._extract_heuristic_features(prompt_lower)
         
-        # Calculate confidence (heuristic has lower confidence)
-        confidence = self._calculate_heuristic_confidence(
-            prompt_lower, 
-            intent_type, 
-            extracted_features
-        )
+        # Calculate confidence
+        confidence = self._calculate_heuristic_confidence(prompt_lower, intent_type, extracted_features)
         
         # Determine if context is required
         requires_context = intent_type in ["extend_app", "modify_app"]
         
-        logger.info(
-            "Heuristic analysis complete",
-            extra={
-                "app_type": app_type,
-                "intent_type": intent_type,
-                "complexity": complexity,
-                "confidence": confidence,
-                "features_found": len(extracted_features)
-            }
-        )
+        # Determine action
+        action = "proceed" if confidence >= 0.6 else "clarify"
         
         return {
             "intent_type": intent_type,
@@ -486,28 +518,42 @@ class LlamaIntentAnalyzer:
             "extracted_features": extracted_features,
             "requires_context": requires_context,
             "needs_clarification": confidence < 0.7,
-            "action": "proceed" if confidence >= 0.6 else "clarify",
-            "metadata": {
-                "source": "heuristic",
-                "validated": False,
-                "timestamp": datetime.now().isoformat()
-            }
+            "action": action,
+            "domain": domain_info["domain"],
+            "specific_type": domain_info["specific_type"],
+            "technical_requirements": requirements
         }
     
-    def _detect_app_type(self, prompt_lower: str) -> str:
-        """Detect what type of app is being requested"""
+    def _detect_heuristic_intent(self, prompt_lower: str, context: Optional[Dict[str, Any]]) -> str:
+        """Detect intent type"""
+        if context and context.get("has_existing_project"):
+            if any(word in prompt_lower for word in ["add", "also", "include", "plus"]):
+                return "extend_app"
+            elif any(word in prompt_lower for word in ["change", "modify", "update", "fix"]):
+                return "modify_app"
         
+        if any(word in prompt_lower for word in ["create", "build", "make", "generate", "new"]):
+            return "new_app"
+        
+        if any(word in prompt_lower for word in ["what", "how", "why", "explain", "help"]):
+            return "clarification"
+        
+        return "new_app"
+    
+    def _detect_heuristic_app_type(self, prompt_lower: str, domain_info: Dict[str, Any]) -> str:
+        """Detect app type"""
+        # Use domain-specific type if available
+        if domain_info["is_specialized"]:
+            return domain_info["specific_type"]
+        
+        # Detect common app types
         app_patterns = {
-            "counter": ["counter", "count", "increment", "decrement", "clicker"],
-            "todo": ["todo", "task", "checklist", "to-do", "reminder"],
-            "calculator": ["calculator", "calc", "calculate", "math", "arithmetic"],
-            "weather": ["weather", "forecast", "temperature", "climate"],
-            "notes": ["note", "memo", "notepad", "journal", "diary"],
-            "shopping": ["shopping", "cart", "e-commerce", "store", "product"],
-            "chat": ["chat", "messenger", "message", "conversation"],
-            "music": ["music", "player", "audio", "song", "playlist"],
-            "calendar": ["calendar", "schedule", "event", "appointment"],
-            "fitness": ["fitness", "workout", "exercise", "tracker", "health"]
+            "counter": ["counter", "count", "increment", "decrement"],
+            "todo": ["todo", "task", "checklist"],
+            "calculator": ["calculator", "calc", "calculate"],
+            "weather": ["weather", "forecast", "temperature"],
+            "notes": ["note", "memo", "notepad"],
+            "generic": []  # Default
         }
         
         for app_type, keywords in app_patterns.items():
@@ -516,43 +562,23 @@ class LlamaIntentAnalyzer:
         
         return "generic"
     
-    def _detect_intent_type(self, prompt_lower: str, context: Optional[Dict[str, Any]]) -> str:
-        """Detect intent type from prompt and context"""
-        
-        # Check context first
-        if context and context.get("has_existing_project"):
-            # User has existing project, likely modifying or extending
-            if any(word in prompt_lower for word in ["add", "also", "include", "plus"]):
-                return "extend_app"
-            elif any(word in prompt_lower for word in ["change", "modify", "update", "fix"]):
-                return "modify_app"
-        
-        # Check for new app creation
-        new_app_keywords = ["create", "build", "make", "generate", "new", "design"]
-        if any(word in prompt_lower for word in new_app_keywords):
-            return "new_app"
-        
-        # Check for clarification/help
-        help_keywords = ["what", "how", "why", "explain", "help", "tell", "show"]
-        if any(word in prompt_lower for word in help_keywords):
-            return "clarification"
-        
-        # Default to new app
-        return "new_app"
-    
-    def _detect_complexity(self, prompt_lower: str) -> str:
-        """Detect complexity level"""
-        
-        word_count = len(prompt_lower.split())
+    def _detect_heuristic_complexity(self, prompt_lower: str, requirements: Dict[str, Any]) -> str:
+        """Detect complexity"""
+        # Special domains are complex
+        if requirements["needs_hardware"]:
+            return "hardware"
+        if requirements["needs_ai_ml"]:
+            return "ai_ml"
         
         # Check for complexity indicators
-        if any(word in prompt_lower for word in ["simple", "basic", "minimal", "quick"]):
+        if any(word in prompt_lower for word in ["simple", "basic", "minimal"]):
             return "simple"
         
-        if any(word in prompt_lower for word in ["complex", "advanced", "complete", "full", "comprehensive"]):
+        if any(word in prompt_lower for word in ["complex", "advanced", "complete", "full"]):
             return "complex"
         
-        # Word count based complexity
+        # Word count based
+        word_count = len(prompt_lower.split())
         if word_count <= 10:
             return "simple"
         elif word_count <= 30:
@@ -560,49 +586,38 @@ class LlamaIntentAnalyzer:
         else:
             return "complex"
     
-    def _extract_features(self, prompt_lower: str) -> List[str]:
-        """Extract features and components from prompt"""
-        
+    def _extract_heuristic_features(self, prompt_lower: str) -> List[str]:
+        """Extract features"""
         features = []
         
-        # Component detection
         components = {
-            "button": ["button", "btn", "click", "press", "tap"],
-            "input": ["input", "text field", "textbox", "entry"],
-            "text": ["text", "label", "heading", "title"],
-            "list": ["list", "items", "collection", "grid"],
-            "image": ["image", "picture", "photo", "icon"],
+            "button": ["button", "btn", "click", "press"],
+            "input": ["input", "text field", "textbox"],
+            "text": ["text", "label", "heading"],
+            "list": ["list", "items", "grid"],
+            "image": ["image", "picture", "photo"],
             "switch": ["switch", "toggle", "checkbox"],
-            "slider": ["slider", "range", "seekbar"],
-            "map": ["map", "location", "gps", "navigation"],
-            "chart": ["chart", "graph", "plot", "visualization"],
-            "video": ["video", "player", "youtube"],
+            "slider": ["slider", "range"],
+            "map": ["map", "location", "gps"],
+            "chart": ["chart", "graph", "plot"],
+            "video": ["video", "player"]
         }
         
         for component, keywords in components.items():
             if any(keyword in prompt_lower for keyword in keywords):
                 features.append(component)
         
-        # Feature detection
-        if any(word in prompt_lower for word in ["login", "signin", "authentication", "auth"]):
+        # Special features
+        if any(word in prompt_lower for word in ["login", "signin", "authentication"]):
             features.append("authentication")
         
-        if any(word in prompt_lower for word in ["database", "storage", "save", "persist"]):
+        if any(word in prompt_lower for word in ["database", "storage", "save"]):
             features.append("data_storage")
         
-        if any(word in prompt_lower for word in ["api", "fetch", "request", "network"]):
+        if any(word in prompt_lower for word in ["api", "fetch", "request"]):
             features.append("api_integration")
         
-        if any(word in prompt_lower for word in ["notification", "alert", "push"]):
-            features.append("notifications")
-        
-        if any(word in prompt_lower for word in ["search", "filter", "sort"]):
-            features.append("search_filter")
-        
-        if any(word in prompt_lower for word in ["payment", "credit card", "purchase", "buy"]):
-            features.append("payment")
-        
-        return list(set(features))  # Remove duplicates
+        return list(set(features))
     
     def _calculate_heuristic_confidence(
         self, 
@@ -610,9 +625,8 @@ class LlamaIntentAnalyzer:
         intent_type: str, 
         features: List[str]
     ) -> float:
-        """Calculate confidence score for heuristic analysis"""
-        
-        confidence = 0.5  # Base confidence
+        """Calculate confidence"""
+        confidence = 0.5
         
         # Adjust based on prompt length
         word_count = len(prompt_lower.split())
@@ -621,27 +635,49 @@ class LlamaIntentAnalyzer:
         if word_count >= 10:
             confidence += 0.1
         
-        # Adjust based on specific keywords found
+        # Adjust based on specific keywords
         specific_keywords = ["counter", "todo", "calculator", "weather", "notes"]
         if any(keyword in prompt_lower for keyword in specific_keywords):
             confidence += 0.2
         
-        # Adjust based on features extracted
+        # Adjust based on features
         if features:
             confidence += min(0.2, len(features) * 0.05)
         
-        # Adjust based on intent type specificity
-        if intent_type in ["new_app", "clarification"]:
-            confidence += 0.1
-        
-        # Cap at 0.9 (heuristic can't be 100% confident)
         return min(0.9, confidence)
     
+    # ====== FORMAT CONVERSION ======
+    
+    def _convert_to_compatible_format(self, result: Dict[str, Any], domain_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert enhanced result to compatible format"""
+        compatible = {
+            "intent_type": result.get("intent_type", "new_app"),
+            "app_type": result.get("app_type", "generic"),
+            "complexity": result.get("complexity", "medium"),
+            "confidence": result.get("confidence", 0.5),
+            "extracted_features": result.get("extracted_features", []),
+            "requires_context": result.get("requires_context", False),
+            "needs_clarification": result.get("needs_clarification", False),
+            "action": result.get("action", "proceed"),
+            "metadata": {
+                "timestamp": datetime.now().isoformat(),
+                "validated": True,
+                "domain": domain_info["domain"],
+                "specific_type": domain_info["specific_type"],
+                "is_specialized": domain_info["is_specialized"]
+            }
+        }
+        
+        # Add technical requirements if available
+        if "technical_requirements" in result:
+            compatible["technical_requirements"] = result["technical_requirements"]
+        
+        return compatible
+    
+    # ====== EMERGENCY FALLBACK ======
+    
     def _emergency_fallback(self, prompt: str) -> Dict[str, Any]:
-        """Emergency fallback when everything fails"""
-        
-        logger.error("Emergency intent fallback triggered")
-        
+        """Emergency fallback"""
         return {
             "intent_type": "clarification",
             "app_type": "generic",
@@ -659,9 +695,29 @@ class LlamaIntentAnalyzer:
             }
         }
     
+    # ====== STATISTICS AND MONITORING ======
+    
+    def _update_stats(self, domain_info: Dict[str, Any], result: Dict[str, Any]):
+        """Update statistics"""
+        complexity = result.get("complexity", "medium")
+        
+        # Update complexity distribution
+        if complexity in self.stats['complexity_distribution']:
+            self.stats['complexity_distribution'][complexity] += 1
+        
+        # Update domain breakdown
+        domain = domain_info["domain"]
+        if domain not in self.stats['domain_breakdown']:
+            self.stats['domain_breakdown'][domain] = 0
+        self.stats['domain_breakdown'][domain] += 1
+    
+    def _track_response_time(self, response_time: float):
+        """Track response time"""
+        self.response_times.append(response_time)
+        self.stats['avg_response_time'] = sum(self.response_times) / len(self.response_times)
+    
     def get_stats(self) -> Dict[str, Any]:
         """Get analyzer statistics"""
-        
         total = self.stats['total_requests']
         
         if total == 0:
@@ -671,12 +727,8 @@ class LlamaIntentAnalyzer:
             **self.stats,
             'llama3_success_rate': (self.stats['llama3_success'] / total) * 100,
             'heuristic_fallback_rate': (self.stats['heuristic_fallback'] / total) * 100,
-            'cache_hit_rate': (self.stats['cache_hits'] / total) * 100,
-            'avg_response_time': self.stats['avg_response_time']
+            'cache_hit_rate': (self.stats['cache_hits'] / total) * 100
         }
-        
-        # Add cache size
-        stats['cache_size'] = len(self.intent_cache)
         
         return stats
     
@@ -688,7 +740,13 @@ class LlamaIntentAnalyzer:
             'heuristic_fallback': 0,
             'cache_hits': 0,
             'validation_failures': 0,
-            'avg_response_time': 0.0
+            'avg_response_time': 0.0,
+            'domain_breakdown': {},
+            'complexity_distribution': {
+                'simple': 0, 'medium': 0, 'complex': 0,
+                'simple_ui': 0, 'data_driven': 0, 'integrated': 0,
+                'enterprise': 0, 'hardware': 0, 'ai_ml': 0
+            }
         }
         self.response_times = []
     
@@ -698,116 +756,61 @@ class LlamaIntentAnalyzer:
         logger.info("Intent cache cleared")
 
 
-# Factory function for easier initialization
-def create_intent_analyzer(config: Dict[str, Any]) -> LlamaIntentAnalyzer:
+# ====== FACTORY FUNCTIONS (for compatibility) ======
+
+def create_intent_analyzer(config: Dict[str, Any]) -> EnhancedLlama3IntentAnalyzer:
     """
-    Factory function to create intent analyzer with proper configuration.
-    
-    Args:
-        config: LLM configuration dictionary
-    
-    Returns:
-        Initialized LlamaIntentAnalyzer instance
+    Factory function - Replaces old create_intent_analyzer
     """
-    return LlamaIntentAnalyzer(config)
+    return EnhancedLlama3IntentAnalyzer(config)
 
 
-# Testing
-if __name__ == "__main__":
-    import asyncio
+# ====== GLOBAL INSTANCE ======
+
+try:
+    # Try to get settings from your config
+    from app.config import settings
     
-    async def test_analyzer():
-        """Test the enhanced intent analyzer"""
-        
-        print("\n" + "=" * 70)
-        print("ENHANCED INTENT ANALYZER TEST")
-        print("=" * 70)
-        
-        # Test configuration
-        test_config = {
-            "llama3_api_key": "test-key",
-            "llama3_model": "llama-3-70b-instruct",
-            "llama3_api_url": "https://fastchat.ideeza.com/v1/chat/completions",
-            "request_timeout": 30.0,
-            "max_retries": 2
-        }
-        
-        analyzer = create_intent_analyzer(test_config)
-        
-        test_cases = [
-            {
-                "prompt": "Create a simple todo list app with add and delete buttons",
-                "context": None,
-                "description": "Todo app creation"
-            },
-            {
-                "prompt": "Add notification feature to my counter app",
-                "context": {"has_existing_project": True},
-                "description": "Extend existing app"
-            },
-            {
-                "prompt": "Build a complex e-commerce app with payment gateway and user authentication",
-                "context": None,
-                "description": "Complex app creation"
-            },
-            {
-                "prompt": "How do I add a search bar to my app?",
-                "context": None,
-                "description": "Clarification request"
-            },
-            {
-                "prompt": "Make a weather app that shows forecast for multiple cities",
-                "context": None,
-                "description": "Weather app with features"
-            }
-        ]
-        
-        for i, test in enumerate(test_cases, 1):
-            print(f"\n[{i}/{len(test_cases)}] {test['description']}")
-            print(f"Prompt: \"{test['prompt']}\"")
-            
-            try:
-                result = await analyzer.analyze(
-                    prompt=test['prompt'],
-                    context=test['context']
-                )
-                
-                print(f"   Intent Type: {result.get('intent_type')}")
-                print(f"   App Type: {result.get('app_type')}")
-                print(f"   Complexity: {result.get('complexity')}")
-                print(f"   Confidence: {result.get('confidence'):.2f}")
-                print(f"   Features: {', '.join(result.get('extracted_features', []))}")
-                print(f"   Action: {result.get('action')}")
-                print(f"   Needs Clarification: {result.get('needs_clarification')}")
-                print(f"   Source: {result.get('metadata', {}).get('source')}")
-                
-            except Exception as e:
-                print(f"   ERROR: {e}")
-        
-        # Show stats
-        print("\n" + "=" * 70)
-        print("STATISTICS")
-        print("=" * 70)
-        
-        stats = analyzer.get_stats()
-        print(f"Total Requests: {stats['total_requests']}")
-        print(f"Llama3 Success: {stats['llama3_success']}")
-        print(f"Heuristic Fallback: {stats['heuristic_fallback']}")
-        print(f"Cache Hits: {stats['cache_hits']}")
-        print(f"Cache Size: {stats.get('cache_size', 0)}")
-        
-        if stats['total_requests'] > 0:
-            print(f"Llama3 Success Rate: {stats.get('llama3_success_rate', 0):.1f}%")
-            print(f"Heuristic Fallback Rate: {stats.get('heuristic_fallback_rate', 0):.1f}%")
-            print(f"Cache Hit Rate: {stats.get('cache_hit_rate', 0):.1f}%")
-            print(f"Avg Response Time: {stats.get('avg_response_time', 0):.2f}s")
-        
-        print("\n" + "=" * 70 + "\n")
+    # Check if settings have the required attributes
+    config_dict = {}
     
-    asyncio.run(test_analyzer())
+    # Try to get each setting, with fallbacks
+    try:
+        config_dict['llama3_api_url'] = settings.LLAMA3_API_URL
+    except AttributeError:
+        config_dict['llama3_api_url'] = "https://fastchat.ideeza.com/v1/chat/completions"
+    
+    try:
+        config_dict['llama3_api_key'] = settings.LLAMA3_API_KEY
+    except AttributeError:
+        config_dict['llama3_api_key'] = ""
+    
+    try:
+        config_dict['llama3_model'] = settings.LLAMA3_MODEL
+    except AttributeError:
+        config_dict['llama3_model'] = "llama-3-70b-instruct"
+    
+    try:
+        config_dict['timeout'] = settings.LLAMA3_TIMEOUT
+    except AttributeError:
+        config_dict['timeout'] = 30.0
+    
+    try:
+        config_dict['max_retries'] = settings.LLAMA3_MAX_RETRIES
+    except AttributeError:
+        config_dict['max_retries'] = 2
+    
+    # Create analyzer with extracted config
+    intent_analyzer = EnhancedLlama3IntentAnalyzer(config_dict)
+    
+except ImportError:
+    # Settings module not found
+    intent_analyzer = None
+except Exception as e:
+    # Any other error
+    logger.warning(f"Failed to create global intent analyzer: {e}")
+    intent_analyzer = None
 
-    # Global instance
-intent_analyzer = LlamaIntentAnalyzer(config=settings.dict())
+# ====== EXPORTS ======
 
-# Export for import
-__all__ = ["LlamaIntentAnalyzer", "intent_analyzer"]
+__all__ = ["EnhancedLlama3IntentAnalyzer", "create_intent_analyzer", "intent_analyzer"]
